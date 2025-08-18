@@ -4,6 +4,7 @@ env:
   git-credential-helper: yes
   variables:
     AWS_REGION: "ca-central-1"
+    AWS_DEFAULT_REGION: "ca-central-1"
     ECR_REPO_NAME: "flask-app"
     EKS_CLUSTER_NAME: "prod"
     K8S_NAMESPACE: "default"
@@ -13,6 +14,7 @@ env:
 phases:
   install:
     commands:
+      - set -euo pipefail
       - echo "Installing kubectl, jq, gettext..."
       - apt-get update -y
       - apt-get install -y jq gettext-base curl
@@ -21,40 +23,55 @@ phases:
 
       - echo "Starting Docker daemon..."
       - nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &
-      - timeout 30 sh -c "until docker info >/dev/null 2>&1; do echo 'Waiting for Docker...'; sleep 1; done"
+      - timeout 45 sh -c "until docker info >/dev/null 2>&1; do echo 'Waiting for Docker…'; sleep 2; done"
+      - docker version
+
   pre_build:
     commands:
-      - echo "Logging into ECR and resolving vars..."
+      - set -euo pipefail
+      - echo "Caller identity:" && aws sts get-caller-identity
+      - echo "Region: ${AWS_REGION}  Repo: ${ECR_REPO_NAME}"
       - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}
       - ECR_URI=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}
-      - aws ecr describe-repositories --repository-names "${ECR_REPO_NAME}" --region ${AWS_REGION} || aws ecr create-repository --repository-name "${ECR_REPO_NAME}" --region ${AWS_REGION}
-      - aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+      - |
+        echo "Ensuring ECR repo ${ECR_REPO_NAME} exists..."
+        aws ecr create-repository \
+          --repository-name "${ECR_REPO_NAME}" \
+          --image-scanning-configuration scanOnPush=true \
+          --encryption-configuration encryptionType=AES256 \
+          --region "${AWS_REGION}" \
+        && echo "Created ECR repo." \
+        || echo "Repo exists or insufficient perms; proceeding."
+
+      - aws ecr get-login-password --region "${AWS_REGION}" \
+        | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
   build:
     commands:
       - echo "Building image ${ECR_URI}:${IMAGE_TAG} ..."
-      - docker build -t ${ECR_URI}:${IMAGE_TAG} -t ${ECR_URI}:latest .
+      - docker build -t "${ECR_URI}:${IMAGE_TAG}" -t "${ECR_URI}:latest" .
 
   post_build:
     commands:
       - echo "Pushing images..."
-      - docker push ${ECR_URI}:${IMAGE_TAG}
-      - docker push ${ECR_URI}:latest
+      - docker push "${ECR_URI}:${IMAGE_TAG}"
+      - docker push "${ECR_URI}:latest"
       - printf '{"image":"%s"}' "${ECR_URI}:${IMAGE_TAG}" > image.json
 
       - echo "Configuring kubectl for ${EKS_CLUSTER_NAME}..."
-      - aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${AWS_REGION}
+      - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
 
       - echo "Ensure namespace exists..."
-      - kubectl get ns ${K8S_NAMESPACE} || kubectl create ns ${K8S_NAMESPACE}
+      - kubectl get ns "${K8S_NAMESPACE}" || kubectl create ns "${K8S_NAMESPACE}"
 
       - echo "Apply base manifests (safe to re-apply)..."
-      - kubectl apply -f k8s/ -n ${K8S_NAMESPACE} || true
+      - kubectl apply -f k8s/ -n "${K8S_NAMESPACE}" || true
 
       - echo "Roll out new image..."
-      - kubectl set image deployment/${K8S_DEPLOYMENT_NAME} ${K8S_CONTAINER_NAME}=${ECR_URI}:${IMAGE_TAG} -n ${K8S_NAMESPACE}
-      - kubectl rollout status deployment/${K8S_DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} --timeout=5m
+      - kubectl set image deployment/"${K8S_DEPLOYMENT_NAME}" "${K8S_CONTAINER_NAME}"="${ECR_URI}:${IMAGE_TAG}" -n "${K8S_NAMESPACE}"
+      - kubectl rollout status deployment/"${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --timeout=5m
 
 artifacts:
   files:
