@@ -15,15 +15,14 @@ phases:
   install:
     commands:
       - set -euo pipefail
-      - echo "Installing kubectl, jq, gettext..."
+      - echo "Installing kubectl, jq, and curl"
       - apt-get update -y
       - apt-get install -y jq gettext-base curl
       - curl -L -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
       - chmod +x /usr/local/bin/kubectl
-
-      - echo "Starting Docker daemon..."
+      - echo "Starting Docker daemon"
       - nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &
-      - timeout 45 sh -c "until docker info >/dev/null 2>&1; do echo 'Waiting for Docker…'; sleep 2; done"
+      - timeout 45 sh -c "until docker info >/dev/null 2>&1; do echo 'Waiting for Docker'; sleep 2; done"
       - docker version
 
   pre_build:
@@ -34,42 +33,30 @@ phases:
       - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}
       - ECR_URI=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}
-
-      - |
-        echo "Ensuring ECR repo ${ECR_REPO_NAME} exists..."
-        aws ecr create-repository \
-          --repository-name "${ECR_REPO_NAME}" \
-          --image-scanning-configuration scanOnPush=true \
-          --encryption-configuration encryptionType=AES256 \
-          --region "${AWS_REGION}" \
-        && echo "Created ECR repo." \
-        || echo "Repo exists or insufficient perms; proceeding."
-
-      - aws ecr get-login-password --region "${AWS_REGION}" \
-        | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+      - echo "Ensuring ECR repo exists"
+      - aws ecr create-repository --repository-name "${ECR_REPO_NAME}" --image-scanning-configuration scanOnPush=true --encryption-configuration encryptionType=AES256 --region "${AWS_REGION}" || true
+      - echo "Logging into ECR"
+      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
   build:
     commands:
-      - echo "Building image ${ECR_URI}:${IMAGE_TAG} ..."
+      - echo "Building image ${ECR_URI}:${IMAGE_TAG}"
       - docker build -t "${ECR_URI}:${IMAGE_TAG}" -t "${ECR_URI}:latest" .
 
   post_build:
     commands:
-      - echo "Pushing images..."
+      - echo "Pushing images"
       - docker push "${ECR_URI}:${IMAGE_TAG}"
       - docker push "${ECR_URI}:latest"
+      - echo "Writing image.json"
       - printf '{"image":"%s"}' "${ECR_URI}:${IMAGE_TAG}" > image.json
-
-      - echo "Configuring kubectl for ${EKS_CLUSTER_NAME}..."
+      - echo "Configuring kubeconfig"
       - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
-
-      - echo "Ensure namespace exists..."
+      - echo "Ensuring namespace ${K8S_NAMESPACE}"
       - kubectl get ns "${K8S_NAMESPACE}" || kubectl create ns "${K8S_NAMESPACE}"
-
-      - echo "Apply base manifests (safe to re-apply)..."
+      - echo "Applying k8s manifests"
       - kubectl apply -f k8s/ -n "${K8S_NAMESPACE}" || true
-
-      - echo "Roll out new image..."
+      - echo "Rolling out new image"
       - kubectl set image deployment/"${K8S_DEPLOYMENT_NAME}" "${K8S_CONTAINER_NAME}"="${ECR_URI}:${IMAGE_TAG}" -n "${K8S_NAMESPACE}"
       - kubectl rollout status deployment/"${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --timeout=5m
 
