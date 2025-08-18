@@ -44,13 +44,25 @@ phases:
       - "docker push \"${ECR_URI}:${IMAGE_TAG}\""
       - "docker push \"${ECR_URI}:latest\""
       - "printf '{\"image\":\"%s\"}' \"${ECR_URI}:${IMAGE_TAG}\" > image.json"
+
       - "echo Configuring kubeconfig for ${EKS_CLUSTER_NAME}"
       - "aws eks update-kubeconfig --name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\""
-      - "echo Ensuring namespace ${K8S_NAMESPACE}"
-      - "echo Applying k8s manifests"
-      - "kubectl apply -f k8s/ -n \"${K8S_NAMESPACE}\" || true"
-      - "echo Rolling out new image"
-      - "kubectl set image deployment/\"${K8S_DEPLOYMENT_NAME}\" \"${K8S_CONTAINER_NAME}\"=\"${ECR_URI}:${IMAGE_TAG}\" -n \"${K8S_NAMESPACE}\""
+
+      # Optional: apply repo-provided manifests if present (safe no-op otherwise)
+      - "echo Applying k8s manifests (if any)"
+      - "test -d k8s && kubectl apply -f k8s/ -n \"${K8S_NAMESPACE}\" || true"
+
+      # Ensure Deployment exists, then update image; if missing, create + expose
+      - "echo Ensuring Deployment exists / updating image"
+      - "kubectl get deploy \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" \
+         && kubectl set image deployment/\"${K8S_DEPLOYMENT_NAME}\" \"${K8S_CONTAINER_NAME}\"=\"${ECR_URI}:${IMAGE_TAG}\" -n \"${K8S_NAMESPACE}\" \
+         || kubectl create deployment \"${K8S_DEPLOYMENT_NAME}\" --image=\"${ECR_URI}:${IMAGE_TAG}\" --port=8000 -n \"${K8S_NAMESPACE}\""
+
+      - "echo Ensuring Service exists"
+      - "kubectl get svc \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" \
+         || kubectl expose deployment/\"${K8S_DEPLOYMENT_NAME}\" --type=LoadBalancer --name=\"${K8S_DEPLOYMENT_NAME}\" --port=80 --target-port=8000 -n \"${K8S_NAMESPACE}\""
+
+      - "echo Waiting for rollout"
       - "kubectl rollout status deployment/\"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" --timeout=5m"
 
 artifacts:
