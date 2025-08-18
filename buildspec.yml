@@ -3,10 +3,7 @@ version: 0.2
 env:
   git-credential-helper: yes
   variables:
-    # Your fixed ECR repo URI (do not change)
     ECR_URI: "502768277707.dkr.ecr.ca-central-1.amazonaws.com/aws_python_app"
-
-    # Cluster & deploy settings
     AWS_REGION: "ca-central-1"
     AWS_DEFAULT_REGION: "ca-central-1"
     EKS_CLUSTER_NAME: "prod"
@@ -17,52 +14,47 @@ env:
 phases:
   install:
     commands:
-      - set -euo pipefail
-      - echo "Installing kubectl, jq, and curl"
-      - apt-get update -y
-      - apt-get install -y jq gettext-base curl
-      - curl -L -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-      - chmod +x /usr/local/bin/kubectl
-      - echo "Starting Docker daemon"
-      - nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &
-      - timeout 45 sh -c "until docker info >/dev/null 2>&1; do echo 'Waiting for Docker'; sleep 2; done"
-      - docker version
+      - "set -euo pipefail"
+      - "echo Installing kubectl, jq, and curl"
+      - "apt-get update -y"
+      - "apt-get install -y jq gettext-base curl"
+      - "curl -L -o /usr/local/bin/kubectl \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\""
+      - "chmod +x /usr/local/bin/kubectl"
+      - "echo Starting Docker daemon"
+      - "nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &"
+      - "timeout 60 sh -c 'until docker info >/dev/null 2>&1; do echo Waiting for Docker; sleep 2; done'"
+      - "docker version"
 
   pre_build:
     commands:
-      - set -euo pipefail
-      - echo "Caller identity:" && aws sts get-caller-identity
-      - echo "Using ECR URI: ${ECR_URI}"
-      - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}
-      - REGISTRY_HOST=$(echo "${ECR_URI}" | cut -d'/' -f1)
-      - echo "Logging into ECR registry ${REGISTRY_HOST}"
-      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${REGISTRY_HOST}"
+      - "set -euo pipefail"
+      - "aws --version"
+      - "echo Using ECR URI ${ECR_URI}"
+      - "IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}"
+      - "REGISTRY_HOST=$(echo \"${ECR_URI}\" | cut -d'/' -f1)"
+      - "echo Logging into ${REGISTRY_HOST}"
+      - "aws ecr get-login-password --region \"${AWS_REGION}\" | docker login --username AWS --password-stdin \"${REGISTRY_HOST}\""
 
   build:
     commands:
-      - echo "Building image ${ECR_URI}:${IMAGE_TAG}"
-      - docker build -t "${ECR_URI}:${IMAGE_TAG}" -t "${ECR_URI}:latest" .
+      - "echo Building image ${ECR_URI}:${IMAGE_TAG}"
+      - "docker build -t \"${ECR_URI}:${IMAGE_TAG}\" -t \"${ECR_URI}:latest\" ."
 
   post_build:
     commands:
-      - echo "Pushing images"
-      - docker push "${ECR_URI}:${IMAGE_TAG}"
-      - docker push "${ECR_URI}:latest"
-      - echo "Writing image.json"
-      - printf '{"image":"%s"}' "${ECR_URI}:${IMAGE_TAG}" > image.json
-
-      - echo "Configuring kubeconfig"
-      - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
-
-      - echo "Ensuring namespace ${K8S_NAMESPACE}"
-      - kubectl get ns "${K8S_NAMESPACE}" || kubectl create ns "${K8S_NAMESPACE}"
-
-      - echo "Applying k8s manifests"
-      - kubectl apply -f k8s/ -n "${K8S_NAMESPACE}" || true
-
-      - echo "Rolling out new image"
-      - kubectl set image deployment/"${K8S_DEPLOYMENT_NAME}" "${K8S_CONTAINER_NAME}"="${ECR_URI}:${IMAGE_TAG}" -n "${K8S_NAMESPACE}"
-      - kubectl rollout status deployment/"${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --timeout=5m
+      - "echo Pushing images"
+      - "docker push \"${ECR_URI}:${IMAGE_TAG}\""
+      - "docker push \"${ECR_URI}:latest\""
+      - "printf '{\"image\":\"%s\"}' \"${ECR_URI}:${IMAGE_TAG}\" > image.json"
+      - "echo Configuring kubeconfig for ${EKS_CLUSTER_NAME}"
+      - "aws eks update-kubeconfig --name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\""
+      - "echo Ensuring namespace ${K8S_NAMESPACE}"
+      - "kubectl get ns \"${K8S_NAMESPACE}\" || kubectl create ns \"${K8S_NAMESPACE}\""
+      - "echo Applying k8s manifests"
+      - "kubectl apply -f k8s/ -n \"${K8S_NAMESPACE}\" || true"
+      - "echo Rolling out new image"
+      - "kubectl set image deployment/\"${K8S_DEPLOYMENT_NAME}\" \"${K8S_CONTAINER_NAME}\"=\"${ECR_URI}:${IMAGE_TAG}\" -n \"${K8S_NAMESPACE}\""
+      - "kubectl rollout status deployment/\"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" --timeout=5m"
 
 artifacts:
   files:
