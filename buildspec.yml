@@ -49,41 +49,46 @@ phases:
       - "export KUBECONFIG=/root/.kube/config"
       - "aws eks update-kubeconfig --name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\""
 
-      # --- Auth & RBAC diagnostics (hard fail with helpful output) ---
+      # Auth & RBAC sanity checks so failures are obvious
       - "echo Verifying we can obtain an EKS auth token"
-      - "aws eks get-token --cluster-name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\" >/dev/null || (echo 'IAM/EKS auth token failed. Ensure the CodeBuild role has eks:DescribeCluster and an EKS Access Entry.' && exit 1)"
-      - "echo Current kubectl context:"
+      - "aws eks get-token --cluster-name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\" >/dev/null || (echo 'IAM or EKS access missing: ensure eks:DescribeCluster AND an EKS Access Entry for this role'; exit 1)"
+      - "echo Current kubectl context"
       - "kubectl config current-context || true"
-      - "echo Checking RBAC for Deployments in namespace ${K8S_NAMESPACE}"
-      - "kubectl auth can-i get deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot GET deployments. Add EKS Access Entry (AmazonEKSEditPolicy) for the CodeBuild role in this namespace.' && exit 1)"
-      - "kubectl auth can-i create deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot CREATE deployments.' && exit 1)"
-      - "kubectl auth can-i update deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot UPDATE deployments.' && exit 1)"
+      - "echo Checking RBAC in namespace ${K8S_NAMESPACE}"
+      - "kubectl auth can-i get deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot GET deployments. Add AmazonEKSEditPolicy (namespace scoped) for CodeBuild role'; exit 1)"
+      - "kubectl auth can-i create deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot CREATE deployments'; exit 1)"
+      - "kubectl auth can-i update deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot UPDATE deployments'; exit 1)"
 
-      # Optional: apply repo manifests if present
+      # Optional: apply repo-provided manifests if present
       - "echo Applying k8s manifests - if any"
       - "test -d k8s && kubectl apply -f k8s/ -n \"${K8S_NAMESPACE}\" || true"
 
-      # Create-or-update Deployment, then ensure Service exists
-      - "echo Ensuring Deployment exists / updating image"
+      # Create-or-update Deployment; first run creates with 1 replica
+      - "echo Ensuring Deployment exists or updating image"
       - "kubectl get deploy \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" \
          && kubectl set image deployment/\"${K8S_DEPLOYMENT_NAME}\" \"${K8S_CONTAINER_NAME}\"=\"${ECR_URI}:${IMAGE_TAG}\" -n \"${K8S_NAMESPACE}\" \
-         || kubectl create deployment \"${K8S_DEPLOYMENT_NAME}\" --image=\"${ECR_URI}:${IMAGE_TAG}\" --port=8000 -n \"${K8S_NAMESPACE}\""
+         || kubectl create deployment \"${K8S_DEPLOYMENT_NAME}\" --image=\"${ECR_URI}:${IMAGE_TAG}\" --port=8000 --replicas=1 -n \"${K8S_NAMESPACE}\""
 
+      # Ensure a LoadBalancer Service exists for quick external access
       - "echo Ensuring Service exists"
       - "kubectl get svc \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" \
          || kubectl expose deployment/\"${K8S_DEPLOYMENT_NAME}\" --type=LoadBalancer --name=\"${K8S_DEPLOYMENT_NAME}\" --port=80 --target-port=8000 -n \"${K8S_NAMESPACE}\""
 
+      # Scale to 1 for stability during initial rollouts (adjust later as needed)
+      - "echo Scaling deployment to 1 replica temporarily"
+      - "kubectl scale deploy/\"${K8S_DEPLOYMENT_NAME}\" --replicas=1 -n \"${K8S_NAMESPACE}\" || true"
+
+      # Rollout with rich diagnostics on failure
       - "echo Waiting for rollout"
       - "kubectl rollout status deployment/\"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" --timeout=5m || { \
-           echo '--- Events (last 60) ---'; kubectl get events -n \"${K8S_NAMESPACE}\" --sort-by=.lastTimestamp | tail -n 60; \
+           echo '--- Events (last 80) ---'; kubectl get events -n \"${K8S_NAMESPACE}\" --sort-by=.lastTimestamp | tail -n 80; \
            echo '--- Pods ---'; kubectl get pods -n \"${K8S_NAMESPACE}\" -l app=\"${K8S_DEPLOYMENT_NAME}\" -o wide; \
-           echo '--- Describe RS ---'; RS=$(kubectl get rs -n \"${K8S_NAMESPACE}\" -l app=\"${K8S_DEPLOYMENT_NAME}\" -o jsonpath='{.items[?(@.status.replicas>0)].metadata.name}' | tail -n1); \
-             [ -n \"$RS\" ] && kubectl describe rs \"$RS\" -n \"${K8S_NAMESPACE}\" || true; \
-           echo '--- Describe Pod ---'; P=$(kubectl get pods -n \"${K8S_NAMESPACE}\" -l app=\"${K8S_DEPLOYMENT_NAME}\" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+           echo '--- Describe first pod ---'; P=$(kubectl get pods -n \"${K8S_NAMESPACE}\" -l app=\"${K8S_DEPLOYMENT_NAME}\" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
              [ -n \"$P\" ] && kubectl describe pod \"$P\" -n \"${K8S_NAMESPACE}\" || true; \
            echo '--- Container Logs (if running) ---'; \
              [ -n \"$P\" ] && kubectl logs \"$P\" -n \"${K8S_NAMESPACE}\" --container=\"${K8S_CONTAINER_NAME}\" --tail=200 || true; \
            exit 1; }"
+
 artifacts:
   files:
     - image.json
