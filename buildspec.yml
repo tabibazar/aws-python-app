@@ -46,13 +46,24 @@ phases:
       - "printf '{\"image\":\"%s\"}' \"${ECR_URI}:${IMAGE_TAG}\" > image.json"
 
       - "echo Configuring kubeconfig for ${EKS_CLUSTER_NAME}"
+      - "export KUBECONFIG=/root/.kube/config"
       - "aws eks update-kubeconfig --name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\""
 
-      # Optional: apply repo-provided manifests if present (safe no-op otherwise)
+      # --- Auth & RBAC diagnostics (hard fail with helpful output) ---
+      - "echo Verifying we can obtain an EKS auth token"
+      - "aws eks get-token --cluster-name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\" >/dev/null || (echo 'IAM/EKS auth token failed. Ensure the CodeBuild role has eks:DescribeCluster and an EKS Access Entry.' && exit 1)"
+      - "echo Current kubectl context:"
+      - "kubectl config current-context || true"
+      - "echo Checking RBAC for Deployments in namespace ${K8S_NAMESPACE}"
+      - "kubectl auth can-i get deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot GET deployments. Add EKS Access Entry (AmazonEKSEditPolicy) for the CodeBuild role in this namespace.' && exit 1)"
+      - "kubectl auth can-i create deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot CREATE deployments.' && exit 1)"
+      - "kubectl auth can-i update deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot UPDATE deployments.' && exit 1)"
+
+      # Optional: apply repo manifests if present
       - "echo Applying k8s manifests - if any"
       - "test -d k8s && kubectl apply -f k8s/ -n \"${K8S_NAMESPACE}\" || true"
 
-      # Ensure Deployment exists, then update image; if missing, create + expose
+      # Create-or-update Deployment, then ensure Service exists
       - "echo Ensuring Deployment exists / updating image"
       - "kubectl get deploy \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" \
          && kubectl set image deployment/\"${K8S_DEPLOYMENT_NAME}\" \"${K8S_CONTAINER_NAME}\"=\"${ECR_URI}:${IMAGE_TAG}\" -n \"${K8S_NAMESPACE}\" \
