@@ -14,16 +14,14 @@ phases:
   install:
     commands:
       - echo "Installing kubectl, jq, gettext..."
-      - yum install -y jq gettext
+      - apt-get update -y
+      - apt-get install -y jq gettext-base curl
       - curl -L -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
       - chmod +x /usr/local/bin/kubectl
 
-      # Start Docker daemon (required in CodeBuild even with privileged mode)
       - echo "Starting Docker daemon..."
       - nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &
       - timeout 30 sh -c "until docker info >/dev/null 2>&1; do echo 'Waiting for Docker...'; sleep 1; done"
-      - docker version
-
   pre_build:
     commands:
       - echo "Logging into ECR and resolving vars..."
