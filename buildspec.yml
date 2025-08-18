@@ -3,9 +3,12 @@ version: 0.2
 env:
   git-credential-helper: yes
   variables:
+    # Your fixed ECR repo URI (do not change)
+    ECR_URI: "502768277707.dkr.ecr.ca-central-1.amazonaws.com/aws_python_app"
+
+    # Cluster & deploy settings
     AWS_REGION: "ca-central-1"
     AWS_DEFAULT_REGION: "ca-central-1"
-    ECR_REPO_NAME: "flask-app"
     EKS_CLUSTER_NAME: "prod"
     K8S_NAMESPACE: "default"
     K8S_DEPLOYMENT_NAME: "flask-app"
@@ -29,14 +32,11 @@ phases:
     commands:
       - set -euo pipefail
       - echo "Caller identity:" && aws sts get-caller-identity
-      - echo "Region: ${AWS_REGION}  Repo: ${ECR_REPO_NAME}"
-      - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - echo "Using ECR URI: ${ECR_URI}"
       - IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}
-      - ECR_URI=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}
-      - echo "Ensuring ECR repo exists"
-      - aws ecr create-repository --repository-name "${ECR_REPO_NAME}" --image-scanning-configuration scanOnPush=true --encryption-configuration encryptionType=AES256 --region "${AWS_REGION}" || true
-      - echo "Logging into ECR"
-      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+      - REGISTRY_HOST=$(echo "${ECR_URI}" | cut -d'/' -f1)
+      - echo "Logging into ECR registry ${REGISTRY_HOST}"
+      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${REGISTRY_HOST}"
 
   build:
     commands:
@@ -50,12 +50,16 @@ phases:
       - docker push "${ECR_URI}:latest"
       - echo "Writing image.json"
       - printf '{"image":"%s"}' "${ECR_URI}:${IMAGE_TAG}" > image.json
+
       - echo "Configuring kubeconfig"
       - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
+
       - echo "Ensuring namespace ${K8S_NAMESPACE}"
       - kubectl get ns "${K8S_NAMESPACE}" || kubectl create ns "${K8S_NAMESPACE}"
+
       - echo "Applying k8s manifests"
       - kubectl apply -f k8s/ -n "${K8S_NAMESPACE}" || true
+
       - echo "Rolling out new image"
       - kubectl set image deployment/"${K8S_DEPLOYMENT_NAME}" "${K8S_CONTAINER_NAME}"="${ECR_URI}:${IMAGE_TAG}" -n "${K8S_NAMESPACE}"
       - kubectl rollout status deployment/"${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --timeout=5m
