@@ -47,7 +47,6 @@ phases:
       - "echo Configuring kubeconfig for ${EKS_CLUSTER_NAME}"
       - "aws eks update-kubeconfig --name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\""
       - "echo Ensuring namespace ${K8S_NAMESPACE}"
-      - "kubectl get ns \"${K8S_NAMESPACE}\" || kubectl create ns \"${K8S_NAMESPACE}\""
       - "echo Applying k8s manifests"
       - "kubectl apply -f k8s/ -n \"${K8S_NAMESPACE}\" || true"
       - "echo Rolling out new image"
