@@ -14,7 +14,6 @@ env:
 phases:
   install:
     commands:
-      - "set -euo pipefail"
       - "echo Installing kubectl, jq, and curl"
       - "apt-get update -y"
       - "apt-get install -y jq gettext-base curl"
@@ -27,7 +26,6 @@ phases:
 
   pre_build:
     commands:
-      - "set -euo pipefail"
       - "aws --version"
       - "echo Using ECR URI ${ECR_URI}"
       - "IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}"
