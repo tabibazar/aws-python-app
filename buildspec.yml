@@ -49,7 +49,7 @@ phases:
       - "aws eks update-kubeconfig --name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\""
 
       # Optional: apply repo-provided manifests if present (safe no-op otherwise)
-      - "echo Applying k8s manifests (if any)"
+      - "echo Applying k8s manifests - if any"
       - "test -d k8s && kubectl apply -f k8s/ -n \"${K8S_NAMESPACE}\" || true"
 
       # Ensure Deployment exists, then update image; if missing, create + expose
