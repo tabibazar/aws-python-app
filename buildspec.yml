@@ -16,76 +16,56 @@ env:
 phases:
   install:
     commands:
-      - echo "Installing kubectl, jq, and curl"
-      - apt-get update -y
-      - apt-get install -y jq gettext-base curl
-      - curl -L -o /usr/local/bin/kubectl "$(curl -Ls https://dl.k8s.io/release/stable.txt | xargs -I{} echo https://dl.k8s.io/release/{}/bin/linux/amd64/kubectl)"
-      - chmod +x /usr/local/bin/kubectl
-      - echo "Starting Docker daemon"
-      - nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &
-      - timeout 60 sh -c 'until docker info >/dev/null 2>&1; do echo "Waiting for Docker"; sleep 2; done'
-      - docker version
+      - "echo Installing kubectl, jq, and curl"
+      - "apt-get update -y"
+      - "apt-get install -y jq gettext-base curl"
+      - "curl -L -o /usr/local/bin/kubectl \"https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\""
+      - "chmod +x /usr/local/bin/kubectl"
+      - "echo Starting Docker daemon"
+      - "nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &"
+      - "timeout 60 sh -c 'until docker info >/dev/null 2>&1; do echo Waiting for Docker; sleep 2; done'"
+      - "docker version"
 
   pre_build:
     commands:
-      - aws --version
-      - echo "Using ECR URI ${ECR_URI}"
-      - IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION}"
-      - REGISTRY_HOST="$(echo "${ECR_URI}" | cut -d'/' -f1)"
-      - echo "Logging into ${REGISTRY_HOST}"
-      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${REGISTRY_HOST}"
+      - "aws --version"
+      - "echo Using ECR URI ${ECR_URI}"
+      - "IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}"
+      - "REGISTRY_HOST=$(echo \"${ECR_URI}\" | cut -d'/' -f1)"
+      - "echo Logging into ${REGISTRY_HOST}"
+      - "aws ecr get-login-password --region \"${AWS_REGION}\" | docker login --username AWS --password-stdin \"${REGISTRY_HOST}\""
 
   build:
     commands:
-      - echo "Building image ${ECR_URI}:${IMAGE_TAG}"
-      - docker build -t "${ECR_URI}:${IMAGE_TAG}" -t "${ECR_URI}:latest" .
+      - "echo Building image ${ECR_URI}:${IMAGE_TAG}"
+      - "docker build -t \"${ECR_URI}:${IMAGE_TAG}\" -t \"${ECR_URI}:latest\" ."
 
   post_build:
     commands:
-      - echo "Pushing images"
-      - docker push "${ECR_URI}:${IMAGE_TAG}"
-      - docker push "${ECR_URI}:latest"
-      - printf '{"image":"%s"}' "${ECR_URI}:${IMAGE_TAG}" > image.json
+      - "echo Pushing images"
+      - "docker push \"${ECR_URI}:${IMAGE_TAG}\""
+      - "docker push \"${ECR_URI}:latest\""
+      - "printf '{\"image\":\"%s\"}' \"${ECR_URI}:${IMAGE_TAG}\" > image.json"
 
-      - echo "Configuring kubeconfig for ${EKS_CLUSTER_NAME}"
-      - export KUBECONFIG=/root/.kube/config
-      - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
+      - "echo Configuring kubeconfig for ${EKS_CLUSTER_NAME}"
+      - "export KUBECONFIG=/root/.kube/config"
+      - "aws eks update-kubeconfig --name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\""
 
-      - echo "RBAC check"
-      - kubectl auth can-i apply -n "${K8S_NAMESPACE}" || { echo "RBAC: cannot apply manifests"; exit 1; }
+      - "echo RBAC check"
+      - "kubectl auth can-i apply -n \"${K8S_NAMESPACE}\" || { echo 'RBAC: cannot apply manifests'; exit 1; }"
 
-      # Apply manifests from k8s folder
-      - echo "Applying ${DEPLOYMENT_FILE} and ${SERVICE_FILE}"
-      - kubectl apply -f "${DEPLOYMENT_FILE}" -n "${K8S_NAMESPACE}"
-      - kubectl apply -f "${SERVICE_FILE}" -n "${K8S_NAMESPACE}"
+      - "echo Applying ${DEPLOYMENT_FILE} and ${SERVICE_FILE}"
+      - "kubectl apply -f \"${DEPLOYMENT_FILE}\" -n \"${K8S_NAMESPACE}\""
+      - "kubectl apply -f \"${SERVICE_FILE}\" -n \"${K8S_NAMESPACE}\""
 
-      - echo "Patching Deployment image to ${ECR_URI}:${IMAGE_TAG}"
-      - kubectl set image deployment/"${K8S_DEPLOYMENT_NAME}" "${K8S_CONTAINER_NAME}"="${ECR_URI}:${IMAGE_TAG}" -n "${K8S_NAMESPACE}"
+      - "echo Patching Deployment image to ${ECR_URI}:${IMAGE_TAG}"
+      - "kubectl set image deployment/\"${K8S_DEPLOYMENT_NAME}\" \"${K8S_CONTAINER_NAME}\"=\"${ECR_URI}:${IMAGE_TAG}\" -n \"${K8S_NAMESPACE}\""
 
-      - echo "Waiting for rollout"
-      - kubectl rollout status deployment/"${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --timeout=5m || {
-          echo "--- Events (last 80) ---";
-          kubectl get events -n "${K8S_NAMESPACE}" --sort-by=.lastTimestamp | tail -n 80;
-          echo "--- Pods ---";
-          kubectl get pods -n "${K8S_NAMESPACE}" -l app="${K8S_DEPLOYMENT_NAME}" -o wide;
-          P="$(kubectl get pods -n "${K8S_NAMESPACE}" -l app="${K8S_DEPLOYMENT_NAME}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)";
-          if [ -n "$P" ]; then
-            echo "--- Describe $P ---";
-            kubectl describe pod "$P" -n "${K8S_NAMESPACE}";
-            echo "--- Container logs ---";
-            kubectl logs "$P" -n "${K8S_NAMESPACE}" --container="${K8S_CONTAINER_NAME}" --tail=200 || true;
-          fi
-          exit 1;
-        }
+      - "echo Waiting for rollout"
+      - "kubectl rollout status deployment/\"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" --timeout=5m || { echo '--- Events (last 80) ---'; kubectl get events -n \"${K8S_NAMESPACE}\" --sort-by=.lastTimestamp | tail -n 80; echo '--- Pods ---'; kubectl get pods -n \"${K8S_NAMESPACE}\" -l app=\"${K8S_DEPLOYMENT_NAME}\" -o wide; P=$(kubectl get pods -n \"${K8S_NAMESPACE}\" -l app=\"${K8S_DEPLOYMENT_NAME}\" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); if [ -n \"$P\" ]; then echo '--- Describe pod ---'; kubectl describe pod \"$P\" -n \"${K8S_NAMESPACE}\"; echo '--- Container logs ---'; kubectl logs \"$P\" -n \"${K8S_NAMESPACE}\" --container=\"${K8S_CONTAINER_NAME}\" --tail=200 || true; fi; exit 1; }"
 
-      - echo "Fetching Service external address (if provisioned)"
-      - |
-        for i in $(seq 1 30); do
-          EXTERNAL="$(kubectl get svc "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" -o json | jq -r '.status.loadBalancer.ingress[0].hostname // .status.loadBalancer.ingress[0].ip // empty')";
-          [ -n "$EXTERNAL" ] && { echo "Service external address: http://$EXTERNAL"; break; }
-          echo "Waiting for EXTERNAL-IP...";
-          sleep 10;
-        done
+      - "echo Fetching Service external address (if provisioned)"
+      - "bash -lc 'for i in $(seq 1 30); do EXTERNAL=$(kubectl get svc \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" -o json | jq -r \".status.loadBalancer.ingress[0].hostname // .status.loadBalancer.ingress[0].ip // empty\"); if [ -n \"$EXTERNAL\" ]; then echo Service external address: http://$EXTERNAL; break; fi; echo Waiting for EXTERNAL-IP...; sleep 10; done'"
 
 artifacts:
   files:
