@@ -16,83 +16,48 @@ env:
 phases:
   install:
     commands:
-      - "echo Installing kubectl, jq, and curl"
-      - "apt-get update -y"
-      - "apt-get install -y jq gettext-base curl"
-      - "curl -L -o /usr/local/bin/kubectl \"https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\""
-      - "chmod +x /usr/local/bin/kubectl"
-      - "echo Starting Docker daemon"
-      - "nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &"
-      - "timeout 60 sh -c 'until docker info >/dev/null 2>&1; do echo Waiting for Docker; sleep 2; done'"
-      - "docker version"
+      - echo "Installing kubectl, jq, and curl"
+      - apt-get update -y
+      - apt-get install -y jq gettext-base curl
+      - curl -L -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+      - chmod +x /usr/local/bin/kubectl
+      - echo "Starting Docker daemon"
+      - nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &
+      - timeout 60 sh -c 'until docker info >/dev/null 2>&1; do echo Waiting for Docker; sleep 2; done'
+      - docker version
 
   pre_build:
     commands:
-      - "aws --version"
-      - "echo Using ECR URI ${ECR_URI}"
-      - "IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}"
-      - "REGISTRY_HOST=$(echo \"${ECR_URI}\" | cut -d'/' -f1)"
-      - "echo Logging into ${REGISTRY_HOST}"
-      - "aws ecr get-login-password --region \"${AWS_REGION}\" | docker login --username AWS --password-stdin \"${REGISTRY_HOST}\""
+      - echo "Logging in to ECR"
+      - REGISTRY_HOST="$(echo "${ECR_URI}" | cut -d'/' -f1)"
+      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${REGISTRY_HOST}"
 
   build:
     commands:
-      - "echo Building image ${ECR_URI}:${IMAGE_TAG} and :latest"
-      - "docker build -t \"${ECR_URI}:${IMAGE_TAG}\" -t \"${ECR_URI}:latest\" ."
+      - echo "Building and tagging image as :latest"
+      - docker build -t "${ECR_URI}:latest" .
 
   post_build:
     commands:
-      - "echo Pushing images"
-      - "docker push \"${ECR_URI}:${IMAGE_TAG}\""
-      - "docker push \"${ECR_URI}:latest\""
-      - "printf '{\"image\":\"%s\"}' \"${ECR_URI}:${IMAGE_TAG}\" > image.json"
+      - echo "Pushing image"
+      - docker push "${ECR_URI}:latest"
+      - printf '{"image":"%s"}\n' "${ECR_URI}:latest" > image.json
 
-      - "echo Configuring kubeconfig for ${EKS_CLUSTER_NAME}"
-      - "export KUBECONFIG=/root/.kube/config"
-      - echo "=== EKS debug preflight ==="
-      - echo "AWS_REGION=${AWS_REGION}  EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME}"
+      - echo "Configuring kubeconfig"
+      - export KUBECONFIG=/root/.kube/config
+      - aws sts get-caller-identity
+      - aws eks describe-cluster --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
+      - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
 
-      - echo "aws --version:"
-      - aws --version
+      - echo "Applying manifests from k8s/"
+      - kubectl apply -f "${DEPLOYMENT_FILE}" -n "${K8S_NAMESPACE}"
+      - kubectl apply -f "${SERVICE_FILE}" -n "${K8S_NAMESPACE}"
 
-      - echo "Caller identity:"
-      - aws sts get-caller-identity || { echo "STS failed -> bad/expired creds"; exit 1; }
+      - echo "Patching deployment to use :latest"
+      - kubectl set image "deployment/${K8S_DEPLOYMENT_NAME}" "${K8S_CONTAINER_NAME}=${ECR_URI}:latest" -n "${K8S_NAMESPACE}"
 
-      - echo "List clusters in region:"
-      - aws eks list-clusters --region "${AWS_REGION}" || true
-
-      - echo "Describe cluster (needs eks:DescribeCluster):"
-      - aws eks describe-cluster --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}" --output table || {
-      - echo "DescribeCluster failed (missing IAM perms or wrong name/region)"; exit 1;
-      - }
-
-      - echo "Now running update-kubeconfig with --debug"
-      - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}" --debug
-      - echo "== EKS kubeconfig setup =="
-      - aws sts get-caller-identity || { echo "Bad AWS creds for CodeBuild role"; exit 1; }
-      - aws eks describe-cluster --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}" \
-        || { echo "DescribeCluster failed (wrong name/region or missing IAM: eks:DescribeCluster)"; exit 1; }
-      - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}" \
-        || { echo "update-kubeconfig failed (network/VPC endpoint/public access issue)"; exit 1; }
-
-      - "echo RBAC sanity checks"
-      - "kubectl auth can-i create deployments -n \"${K8S_NAMESPACE}\" || { echo 'RBAC: cannot CREATE deployments'; exit 1; }"
-      - "kubectl auth can-i update deployments -n \"${K8S_NAMESPACE}\" || { echo 'RBAC: cannot UPDATE deployments'; exit 1; }"
-      - "kubectl auth can-i create services -n \"${K8S_NAMESPACE}\" || { echo 'RBAC: cannot CREATE services'; exit 1; }"
-      - "kubectl auth can-i update services -n \"${K8S_NAMESPACE}\" || { echo 'RBAC: cannot UPDATE services'; exit 1; }"
-
-      - "echo Applying ${DEPLOYMENT_FILE} and ${SERVICE_FILE}"
-      - "kubectl apply -f \"${DEPLOYMENT_FILE}\" -n \"${K8S_NAMESPACE}\""
-      - "kubectl apply -f \"${SERVICE_FILE}\" -n \"${K8S_NAMESPACE}\""
-
-      - "echo Forcing Deployment to use :latest"
-      - "kubectl set image deployment/\"${K8S_DEPLOYMENT_NAME}\" \"${K8S_CONTAINER_NAME}\"=\"${ECR_URI}:latest\" -n \"${K8S_NAMESPACE}\""
-
-      - "echo Waiting for rollout"
-      - "kubectl rollout status deployment/\"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" --timeout=5m || { echo '--- Events (last 80) ---'; kubectl get events -n \"${K8S_NAMESPACE}\" --sort-by=.lastTimestamp | tail -n 80; echo '--- Pods ---'; kubectl get pods -n \"${K8S_NAMESPACE}\" -l app=\"${K8S_DEPLOYMENT_NAME}\" -o wide; P=$(kubectl get pods -n \"${K8S_NAMESPACE}\" -l app=\"${K8S_DEPLOYMENT_NAME}\" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); if [ -n \"$P\" ]; then echo '--- Describe pod ---'; kubectl describe pod \"$P\" -n \"${K8S_NAMESPACE}\"; echo '--- Container logs ---'; kubectl logs \"$P\" -n \"${K8S_NAMESPACE}\" --container=\"${K8S_CONTAINER_NAME}\" --tail=200 || true; fi; exit 1; }"
-
-      - "echo Fetching Service external address (if provisioned)"
-      - "bash -lc 'for i in $(seq 1 30); do EXTERNAL=$(kubectl get svc \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" -o json | jq -r \".status.loadBalancer.ingress[0].hostname // .status.loadBalancer.ingress[0].ip // empty\"); if [ -n \"$EXTERNAL\" ]; then echo Service external address: http://$EXTERNAL; break; fi; echo Waiting for EXTERNAL-IP...; sleep 10; done'"
+      - echo "Waiting for rollout"
+      - kubectl rollout status "deployment/${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --timeout=5m
 
 artifacts:
   files:
