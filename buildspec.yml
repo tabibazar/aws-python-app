@@ -1,7 +1,0 @@
-version: 0.2
-phases:
-  pre_build:
-    commands:
-      - echo "MARKER: INLINE-BUILDSPEC-OVERRIDE-$(date +%s)"
-      - echo "If you see this line, CodeBuild used the inline buildspec override."
-      - exit 0

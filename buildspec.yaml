@@ -1,0 +1,168 @@
+version: 0.2
+
+env:
+  git-credential-helper: yes
+  variables:
+    ECR_URI: '502768277707.dkr.ecr.ca-central-1.amazonaws.com/aws_python_app'
+    AWS_REGION: 'ca-central-1'
+    AWS_DEFAULT_REGION: 'ca-central-1'
+    EKS_CLUSTER_NAME: 'extravagant-folk-walrus'
+    K8S_NAMESPACE: 'default'
+    K8S_DEPLOYMENT_NAME: 'flask-app'
+    K8S_CONTAINER_NAME: 'flask-app'
+    APP_PORT: '8000'
+    SVC_PORT: '80'
+
+phases:
+  install:
+    commands:
+      - echo "Installing kubectl and tools"
+      - apt-get update -y
+      - apt-get install -y jq gettext-base curl
+      - |
+        curl -L -o /usr/local/bin/kubectl \
+          "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+      - chmod +x /usr/local/bin/kubectl
+      - echo "Starting Docker daemon"
+      - nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &
+      - |
+        timeout 60 sh -c 'until docker info >/dev/null 2>&1; do
+          echo "Waiting for Docker";
+          sleep 2;
+        done'
+      - docker version
+
+  pre_build:
+    commands:
+      - echo "Login to ECR"
+      - REGISTRY_HOST="$(echo "${ECR_URI}" | cut -d'/' -f1)"
+      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${REGISTRY_HOST}"
+
+  build:
+    commands:
+      - echo "Build and tag :latest"
+      - docker build -t "${ECR_URI}:latest" .
+
+  post_build:
+    commands:
+      - echo "Push image"
+      - docker push "${ECR_URI}:latest"
+      - printf '{"image":"%s"}\n' "${ECR_URI}:latest" > image.json
+
+      - echo "Configure kubeconfig"
+      - export KUBECONFIG=/root/.kube/config
+      - mkdir -p /root/.kube
+      - aws sts get-caller-identity
+      - aws eks describe-cluster --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
+      - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
+      - kubectl cluster-info
+
+      # Test basic connectivity and permissions
+      - echo "Testing cluster connectivity and permissions"
+      - kubectl get nodes || { echo "Cannot connect to cluster"; exit 1; }
+      - kubectl auth can-i create deployments -n "${K8S_NAMESPACE}" || { echo "No permission to create deployments"; exit 1; }
+      - kubectl auth can-i create services -n "${K8S_NAMESPACE}" || { echo "No permission to create services"; exit 1; }
+
+      # Create deployment with proper error handling
+      - echo "Creating/updating deployment"
+      - |
+        if kubectl get deploy "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" >/dev/null 2>&1; then
+          echo "Deployment exists, updating image"
+          kubectl set image deployment/"${K8S_DEPLOYMENT_NAME}" "${K8S_CONTAINER_NAME}=${ECR_URI}:latest" -n "${K8S_NAMESPACE}"
+        else
+          echo "Creating new deployment"
+          kubectl create deployment "${K8S_DEPLOYMENT_NAME}" \
+            --image="${ECR_URI}:latest" \
+            -n "${K8S_NAMESPACE}"
+        fi
+
+      # Configure deployment settings
+      - echo "Configuring deployment settings"
+      - kubectl set env deployment/"${K8S_DEPLOYMENT_NAME}" FLASK_ENV=production -n "${K8S_NAMESPACE}"
+      - kubectl set resources deployment/"${K8S_DEPLOYMENT_NAME}" --requests=cpu=100m,memory=128Mi --limits=cpu=500m,memory=512Mi -n "${K8S_NAMESPACE}"
+
+      # Set container port (safer approach)
+      - |
+        kubectl patch deployment "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --type='merge' -p='{
+          "spec": {
+            "template": {
+              "spec": {
+                "containers": [{
+                  "name": "'"${K8S_CONTAINER_NAME}"'",
+                  "ports": [{"containerPort": '"${APP_PORT}"'}],
+                  "imagePullPolicy": "Always"
+                }]
+              }
+            }
+          }
+        }' || echo "Warning: Could not patch container settings"
+
+      # Create service if it doesn't exist
+      - echo "Creating/checking service"
+      - |
+        if ! kubectl get svc "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" >/dev/null 2>&1; then
+          echo "Creating LoadBalancer service"
+          kubectl expose deployment "${K8S_DEPLOYMENT_NAME}" \
+            --type=LoadBalancer \
+            --name="${K8S_DEPLOYMENT_NAME}" \
+            --port="${SVC_PORT}" \
+            --target-port="${APP_PORT}" \
+            -n "${K8S_NAMESPACE}"
+        else
+          echo "Service already exists"
+        fi
+
+      # Wait for rollout with better error handling
+      - echo "Waiting for deployment rollout"
+      - |
+        if ! kubectl rollout status deployment/"${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --timeout=10m; then
+          echo "Rollout failed or timed out. Diagnostics:"
+          echo "=== Deployment Status ==="
+          kubectl describe deployment "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}"
+          echo "=== Pod Status ==="
+          kubectl get pods -l app="${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" -o wide
+          echo "=== Recent Events ==="
+          kubectl get events -n "${K8S_NAMESPACE}" --sort-by=.lastTimestamp | tail -20
+          echo "=== Pod Logs ==="
+          POD_NAME=$(kubectl get pods -l app="${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$POD_NAME" ]; then
+            kubectl logs "$POD_NAME" -n "${K8S_NAMESPACE}" --tail=50 || echo "Could not get pod logs"
+            kubectl describe pod "$POD_NAME" -n "${K8S_NAMESPACE}"
+          fi
+          exit 1
+        fi
+
+      # Get LoadBalancer address
+      - echo "Fetching LoadBalancer address"
+      - |
+        echo "Waiting for LoadBalancer to be provisioned..."
+        for i in $(seq 1 60); do
+          EXTERNAL_HOST=$(kubectl get svc "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" 2>/dev/null || echo "")
+          EXTERNAL_IP=$(kubectl get svc "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || echo "")
+          
+          if [ -n "$EXTERNAL_HOST" ] || [ -n "$EXTERNAL_IP" ]; then
+            EXTERNAL_ADDRESS="${EXTERNAL_HOST:-$EXTERNAL_IP}"
+            echo "✅ Service URL: http://$EXTERNAL_ADDRESS:${SVC_PORT}"
+            # Test the endpoint
+            if command -v curl >/dev/null; then
+              echo "Testing endpoint..."
+              curl -f -m 30 "http://$EXTERNAL_ADDRESS:${SVC_PORT}" || echo "Warning: Endpoint test failed"
+            fi
+            break
+          fi
+          
+          echo "Attempt $i/60: Waiting for EXTERNAL-IP..."
+          kubectl get svc "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}"
+          sleep 10
+        done
+        
+        if [ -z "$EXTERNAL_HOST" ] && [ -z "$EXTERNAL_IP" ]; then
+          echo "⚠️  LoadBalancer external address not available after 10 minutes"
+          echo "Service status:"
+          kubectl describe svc "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}"
+        fi
+
+artifacts:
+  files:
+    - image.json
+  discard-paths: yes
