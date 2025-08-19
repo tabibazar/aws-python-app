@@ -51,9 +51,12 @@ phases:
       - "export KUBECONFIG=/root/.kube/config"
       - "aws eks update-kubeconfig --name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\""
 
-      - "echo RBAC check"
-      - "kubectl auth can-i apply -n \"${K8S_NAMESPACE}\" || { echo 'RBAC: cannot apply manifests'; exit 1; }"
-
+      - "echo RBAC sanity checks"
+      - "kubectl auth can-i create deployments -n \"${K8S_NAMESPACE}\" || { echo 'RBAC: cannot CREATE deployments'; exit 1; }"
+      - "kubectl auth can-i update deployments -n \"${K8S_NAMESPACE}\" || { echo 'RBAC: cannot UPDATE deployments'; exit 1; }"
+      - "kubectl auth can-i create services -n \"${K8S_NAMESPACE}\" || { echo 'RBAC: cannot CREATE services'; exit 1; }"
+      - "kubectl auth can-i update services -n \"${K8S_NAMESPACE}\" || { echo 'RBAC: cannot UPDATE services'; exit 1; }"
+      -
       - "echo Applying ${DEPLOYMENT_FILE} and ${SERVICE_FILE}"
       - "kubectl apply -f \"${DEPLOYMENT_FILE}\" -n \"${K8S_NAMESPACE}\""
       - "kubectl apply -f \"${SERVICE_FILE}\" -n \"${K8S_NAMESPACE}\""
