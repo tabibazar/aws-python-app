@@ -16,46 +16,52 @@ env:
 phases:
   install:
     commands:
-      - "echo Installing kubectl and tools"
-      - "apt-get update -y"
-      - "apt-get install -y jq gettext-base curl"
+      - echo "Installing kubectl and tools"
+      - apt-get update -y
+      - apt-get install -y jq gettext-base curl
       - |
         curl -L -o /usr/local/bin/kubectl \
           "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-      - "chmod +x /usr/local/bin/kubectl"
-      - "echo Starting Docker daemon"
-      - "nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &"
+      - chmod +x /usr/local/bin/kubectl
+
+      - echo "Starting Docker daemon"
+      - nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &
       - |
         timeout 60 sh -c 'until docker info >/dev/null 2>&1; do
           echo "Waiting for Docker";
           sleep 2;
         done'
-      - "docker version"
+      - docker version
+
+      # Enable cross-arch builds (ARM64) using buildx + qemu
+      - echo "Enabling multi-arch buildx (ARM64)"
+      - docker run --privileged --rm tonistiigi/binfmt --install arm64 >/dev/null 2>&1 || true
+      - docker buildx create --name cbx --use >/dev/null 2>&1 || docker buildx use cbx
+      - docker buildx inspect --bootstrap
 
   pre_build:
     commands:
-      - "echo Login to ECR"
+      - echo "Login to ECR"
       - 'REGISTRY_HOST="$(echo "${ECR_URI}" | cut -d"/" -f1)"'
       - 'aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${REGISTRY_HOST}"'
 
   build:
     commands:
-      - 'echo Build and tag :latest'
-      - 'docker build -t "${ECR_URI}:latest" .'
+      - echo "Build ARM64 image and push :latest"
+      # Buildx pushes directly; this guarantees an ARM64 manifest in ECR
+      - 'docker buildx build --platform linux/arm64 -t "${ECR_URI}:latest" --push .'
 
   post_build:
     commands:
-      - "echo Push image"
-      - 'docker push "${ECR_URI}:latest"'
       - 'printf "{\"image\":\"%s\"}\n" "${ECR_URI}:latest" > image.json'
 
-      - "echo Configure kubeconfig"
-      - "mkdir -p /root/.kube"
-      - "export KUBECONFIG=/root/.kube/config"
+      - echo "Configure kubeconfig"
+      - mkdir -p /root/.kube
+      - export KUBECONFIG=/root/.kube/config
       - 'aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"'
 
-      # Ensure this CodeBuild role can access the cluster (safe to re-run)
-      - "echo Ensuring this CodeBuild role has EKS cluster access"
+      # Ensure this CodeBuild role can access the cluster (idempotent)
+      - echo "Ensuring this CodeBuild role has EKS cluster access"
       - 'PRINCIPAL_STS_ARN=$(aws sts get-caller-identity --query Arn --output text)'
       - 'ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)'
       - 'ROLE_NAME=$(echo "$PRINCIPAL_STS_ARN" | awk -F"/" "/assumed-role/{print \$2}")'
@@ -64,13 +70,13 @@ phases:
       - 'aws eks create-access-entry --cluster-name "${EKS_CLUSTER_NAME}" --principal-arn "${ROLE_ARN}" --type STANDARD --region "${AWS_REGION}" >/dev/null 2>&1 || echo "Access entry exists"'
       - 'aws eks associate-access-policy --cluster-name "${EKS_CLUSTER_NAME}" --principal-arn "${ROLE_ARN}" --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy --access-scope type=cluster --region "${AWS_REGION}" >/dev/null 2>&1 || echo "Policy associated"'
       - 'aws eks get-token --cluster-name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}" >/dev/null'
+
       - 'kubectl cluster-info || { echo "kubectl cannot reach the cluster"; exit 1; }'
       - 'kubectl get nodes || { echo "No nodes reachable"; exit 1; }'
 
       # Create or update Deployment (imperatively)
-      - "echo Creating/updating deployment"
+      - echo "Creating/updating deployment"
       - 'kubectl get deploy "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" >/dev/null 2>&1 || kubectl create deployment "${K8S_DEPLOYMENT_NAME}" --image="${ECR_URI}:latest" -n "${K8S_NAMESPACE}"'
-      # detect actual container name then set image; fallback to wildcard
       - |
         CN=$(kubectl get deploy "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" -o jsonpath='{.spec.template.spec.containers[0].name}' 2>/dev/null || echo "")
         if [ -n "$CN" ]; then
@@ -83,13 +89,13 @@ phases:
       - 'kubectl set env deployment/"${K8S_DEPLOYMENT_NAME}" FLASK_ENV=production -n "${K8S_NAMESPACE}"'
       - 'kubectl set resources deployment/"${K8S_DEPLOYMENT_NAME}" --requests=cpu=100m,memory=128Mi --limits=cpu=500m,memory=512Mi -n "${K8S_NAMESPACE}"'
       - |
-        # ensure containerPort + Always pull
+        # Ensure containerPort + Always pull
         kubectl patch deployment "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/ports","value":[{"containerPort": '"${APP_PORT}"'}]}]' || true
       - |
         kubectl patch deployment "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Always"}]' || true
 
       # Ensure a public LoadBalancer Service
-      - "echo Creating/checking service"
+      - echo "Creating/checking service"
       - |
         if ! kubectl get svc "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" >/dev/null 2>&1; then
           kubectl expose deployment "${K8S_DEPLOYMENT_NAME}" \
@@ -103,7 +109,7 @@ phases:
         fi
 
       # Wait for rollout and surface diagnostics on failure
-      - "echo Waiting for deployment rollout"
+      - echo "Waiting for deployment rollout"
       - |
         if ! kubectl rollout status deployment/"${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --timeout=10m; then
           echo "Rollout failed or timed out. Diagnostics:"
@@ -123,7 +129,7 @@ phases:
         fi
 
       # Print the public URL once the NLB is ready
-      - "echo Fetching LoadBalancer address"
+      - echo "Fetching LoadBalancer address"
       - |
         for i in $(seq 1 60); do
           H=$(kubectl get svc "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" 2>/dev/null || echo "")
