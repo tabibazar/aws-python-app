@@ -58,6 +58,7 @@ phases:
       - "kubectl auth can-i get deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot GET deployments. Add AmazonEKSEditPolicy (namespace scoped) for CodeBuild role'; exit 1)"
       - "kubectl auth can-i create deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot CREATE deployments'; exit 1)"
       - "kubectl auth can-i update deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot UPDATE deployments'; exit 1)"
+      - "kubectl auth can-i get services -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot GET services'; exit 1)"
 
       # Optional: apply repo-provided manifests if present
       - "echo Applying k8s manifests - if any"
@@ -69,7 +70,13 @@ phases:
          && kubectl set image deployment/\"${K8S_DEPLOYMENT_NAME}\" \"${K8S_CONTAINER_NAME}\"=\"${ECR_URI}:${IMAGE_TAG}\" -n \"${K8S_NAMESPACE}\" \
          || kubectl create deployment \"${K8S_DEPLOYMENT_NAME}\" --image=\"${ECR_URI}:${IMAGE_TAG}\" --port=8000 --replicas=1 -n \"${K8S_NAMESPACE}\""
 
-      # Ensure a LoadBalancer Service exists for quick external access
+      # Clean up any stale RS that still has a placeholder image
+      - "echo Removing any ReplicaSet with placeholder image reference"
+      - "for RS in $(kubectl get rs -n \"${K8S_NAMESPACE}\" -l app=\"${K8S_DEPLOYMENT_NAME}\" -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{.spec.template.spec.containers[0].image}{\"\\n\"}{end}' | awk '/REPLACE_ME_/ {print $1}'); do \
+            echo Deleting stale RS: $RS; kubectl delete rs \"$RS\" -n \"${K8S_NAMESPACE}\" || true; \
+         done"
+
+      # Ensure a LoadBalancer Service exists
       - "echo Ensuring Service exists"
       - "kubectl get svc \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" \
          || kubectl expose deployment/\"${K8S_DEPLOYMENT_NAME}\" --type=LoadBalancer --name=\"${K8S_DEPLOYMENT_NAME}\" --port=80 --target-port=8000 -n \"${K8S_NAMESPACE}\""
@@ -88,6 +95,14 @@ phases:
            echo '--- Container Logs (if running) ---'; \
              [ -n \"$P\" ] && kubectl logs \"$P\" -n \"${K8S_NAMESPACE}\" --container=\"${K8S_CONTAINER_NAME}\" --tail=200 || true; \
            exit 1; }"
+
+      # --- Print the external endpoint if we have one ---
+      - "echo Fetching Service external address (if provisioned)"
+      - "for i in $(seq 1 30); do \
+            EXTERNAL=$(kubectl get svc \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" -o json | jq -r '.status.loadBalancer.ingress[0].hostname // .status.loadBalancer.ingress[0].ip // empty'); \
+            if [ -n \"$EXTERNAL\" ]; then echo \"Service external address: http://$EXTERNAL\"; break; fi; \
+            echo Waiting for EXTERNAL-IP...; sleep 10; \
+         done"
 
 artifacts:
   files:
