@@ -1,18 +1,7 @@
 version: 0.2
-env:
-  variables:
-    AWS_REGION: 'ca-central-1'
-    EKS_CLUSTER_NAME: 'extravagant-folk-walrus'
-
 phases:
   pre_build:
     commands:
-      - echo "=== Who am I (STS) ==="
-      - aws sts get-caller-identity
-      - echo "=== Does the cluster exist? ==="
-      - aws eks describe-cluster --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}" --query 'cluster.status'
-      - echo "=== Try to get an EKS auth token (IAM check only) ==="
-      - >
-        aws eks get-token --cluster-name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}" >/dev/null
-        && echo "EKS get-token: OK"
-        || { echo "EKS get-token: FAILED ($?)"; exit 1; }
+      - echo "MARKER: INLINE-BUILDSPEC-OVERRIDE-$(date +%s)"
+      - echo "If you see this line, CodeBuild used the inline buildspec override."
+      - exit 0
