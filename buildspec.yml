@@ -6,7 +6,6 @@ env:
     ECR_URI: "502768277707.dkr.ecr.ca-central-1.amazonaws.com/aws_python_app"
     AWS_REGION: "ca-central-1"
     AWS_DEFAULT_REGION: "ca-central-1"
-    # <-- Set this to your active cluster
     EKS_CLUSTER_NAME: "curious-rock-crab"
     K8S_NAMESPACE: "default"
     K8S_DEPLOYMENT_NAME: "flask-app"
@@ -17,109 +16,73 @@ env:
 phases:
   install:
     commands:
-      - echo "Installing kubectl and tools"
-      - apt-get update -y
-      - apt-get install -y jq gettext-base curl
-      - 'curl -L -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"'
-      - chmod +x /usr/local/bin/kubectl
-      - echo "Starting Docker daemon"
-      - nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &
-      - 'timeout 60 sh -c "until docker info >/dev/null 2>&1; do echo Waiting for Docker; sleep 2; done"'
-      - docker version
+      - "echo Installing kubectl and tools"
+      - "apt-get update -y"
+      - "apt-get install -y jq gettext-base curl"
+      - "curl -L -o /usr/local/bin/kubectl \"https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\""
+      - "chmod +x /usr/local/bin/kubectl"
+      - "echo Starting Docker daemon"
+      - "nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &"
+      - "timeout 60 sh -c 'until docker info >/dev/null 2>&1; do echo Waiting for Docker; sleep 2; done'"
+      - "docker version"
 
   pre_build:
     commands:
-      - echo "Login to ECR"
-      - REGISTRY_HOST="$(echo "${ECR_URI}" | cut -d'/' -f1)"
-      - 'aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${REGISTRY_HOST}"'
+      - "echo Login to ECR"
+      - "REGISTRY_HOST=$(echo \"${ECR_URI}\" | cut -d'/' -f1)"
+      - "aws ecr get-login-password --region \"${AWS_REGION}\" | docker login --username AWS --password-stdin \"${REGISTRY_HOST}\""
 
   build:
     commands:
-      - echo "Build and tag :latest"
-      - 'docker build -t "${ECR_URI}:latest" .'
+      - "echo Build and tag :latest"
+      - "docker build -t \"${ECR_URI}:latest\" ."
 
   post_build:
     commands:
-      - echo "Push image"
-      - 'docker push "${ECR_URI}:latest"'
-      - 'printf "{\"image\":\"%s\"}\n" "${ECR_URI}:latest" > image.json'
+      - "echo Push image"
+      - "docker push \"${ECR_URI}:latest\""
+      - "printf '{\"image\":\"%s\"}\n' \"${ECR_URI}:latest\" > image.json"
 
-      - echo "Configure kubeconfig"
-      - mkdir -p /root/.kube
-      - export KUBECONFIG=/root/.kube/config
-      - 'aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"'
+      - "echo Configure kubeconfig"
+      - "mkdir -p /root/.kube"
+      - "export KUBECONFIG=/root/.kube/config"
+      - "aws eks update-kubeconfig --name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\""
 
-      # ===== EKS ACCESS SNIPPET (must be BEFORE the first kubectl) =====
-      - echo "Ensuring this CodeBuild role has EKS cluster access"
-      - PRINCIPAL_STS_ARN="$(aws sts get-caller-identity --query Arn --output text)"
-      - echo "STS ARN: ${PRINCIPAL_STS_ARN}"
-      - ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-      - ROLE_NAME="$(echo "${PRINCIPAL_STS_ARN}" | awk -F'/' '/assumed-role/{print $2}')"
-      - ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
-      - echo "Derived role ARN: ${ROLE_ARN}"
-      - >
-        aws eks create-access-entry
-        --cluster-name "${EKS_CLUSTER_NAME}"
-        --principal-arn "${ROLE_ARN}"
-        --type STANDARD
-        --region "${AWS_REGION}"
-        >/dev/null 2>&1 || echo "Access entry already exists"
-      - >
-        aws eks associate-access-policy
-        --cluster-name "${EKS_CLUSTER_NAME}"
-        --principal-arn "${ROLE_ARN}"
-        --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy
-        --access-scope type=cluster
-        --region "${AWS_REGION}"
-        >/dev/null 2>&1 || echo "Policy already associated"
-      - 'aws eks get-token --cluster-name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}" >/dev/null'
+      # EKS access (BEFORE first kubectl)
+      - "echo Ensuring this CodeBuild role has EKS cluster access"
+      - "PRINCIPAL_STS_ARN=$(aws sts get-caller-identity --query Arn --output text)"
+      - "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)"
+      - "ROLE_NAME=$(echo \"$PRINCIPAL_STS_ARN\" | awk -F'/' '/assumed-role/{print $2}')"
+      - "ROLE_ARN=arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
+      - "echo Using role ARN: ${ROLE_ARN}"
+      - "aws eks create-access-entry --cluster-name \"${EKS_CLUSTER_NAME}\" --principal-arn \"${ROLE_ARN}\" --type STANDARD --region \"${AWS_REGION}\" >/dev/null 2>&1 || echo Access entry exists"
+      - "aws eks associate-access-policy --cluster-name \"${EKS_CLUSTER_NAME}\" --principal-arn \"${ROLE_ARN}\" --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy --access-scope type=cluster --region \"${AWS_REGION}\" >/dev/null 2>&1 || echo Policy associated"
+      - "aws eks get-token --cluster-name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\" >/dev/null"
 
-      # ===== First kubectl after access is granted =====
-      - kubectl cluster-info || { echo "kubectl cannot reach the cluster"; exit 1; }
-      - kubectl get nodes
+      # First kubectl after access is granted
+      - "kubectl cluster-info || { echo 'kubectl cannot reach the cluster'; exit 1; }"
+      - "kubectl get nodes"
 
-      # Create/update deployment imperatively (no manifests)
-      - echo "Create/update Deployment"
-      - >
-        kubectl get deploy "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" >/dev/null 2>&1 ||
-        kubectl create deployment "${K8S_DEPLOYMENT_NAME}" --image="${ECR_URI}:latest" -n "${K8S_NAMESPACE}"
-      - 'kubectl set image deployment/"${K8S_DEPLOYMENT_NAME}" "${K8S_CONTAINER_NAME}=${ECR_URI}:latest" -n "${K8S_NAMESPACE}"'
-      - 'kubectl set env deployment/"${K8S_DEPLOYMENT_NAME}" FLASK_ENV=production -n "${K8S_NAMESPACE}"'
-      - 'kubectl set resources deployment/"${K8S_DEPLOYMENT_NAME}" --requests=cpu=100m,memory=128Mi --limits=cpu=500m,memory=512Mi -n "${K8S_NAMESPACE}"'
-      - >
-        kubectl patch deployment "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}"
-        --type=json
-        -p='[{"op":"add","path":"/spec/template/spec/containers/0/ports","value":[{"containerPort":'"${APP_PORT}"'}]}]' || true
-      - >
-        kubectl patch deployment "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}"
-        --type=json
-        -p='[{"op":"add","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Always"}]' || true
+      # Imperative deploy (no manifests)
+      - "echo Ensure Deployment exists"
+      - "kubectl get deploy \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" || kubectl create deployment \"${K8S_DEPLOYMENT_NAME}\" --image=\"${ECR_URI}:latest\" -n \"${K8S_NAMESPACE}\""
+      - "kubectl set image deployment/\"${K8S_DEPLOYMENT_NAME}\" \"${K8S_CONTAINER_NAME}=${ECR_URI}:latest\" -n \"${K8S_NAMESPACE}\""
+      - "kubectl set env deployment/\"${K8S_DEPLOYMENT_NAME}\" FLASK_ENV=production -n \"${K8S_NAMESPACE}\""
+      - "kubectl set resources deployment/\"${K8S_DEPLOYMENT_NAME}\" --requests=cpu=100m,memory=128Mi --limits=cpu=500m,memory=512Mi -n \"${K8S_NAMESPACE}\""
+      - "sh -c \"kubectl patch deployment '${K8S_DEPLOYMENT_NAME}' -n '${K8S_NAMESPACE}' --type=json -p='[{\\\"op\\\":\\\"add\\\",\\\"path\\\":\\\"/spec/template/spec/containers/0/ports\\\",\\\"value\\\":[{\\\"containerPort\\\":${APP_PORT}}]}]' || true\""
+      - "sh -c \"kubectl patch deployment '${K8S_DEPLOYMENT_NAME}' -n '${K8S_NAMESPACE}' --type=json -p='[{\\\"op\\\":\\\"add\\\",\\\"path\\\":\\\"/spec/template/spec/containers/0/imagePullPolicy\\\",\\\"value\\\":\\\"Always\\\"}]' || true\""
 
-      # Ensure LoadBalancer Service exists
-      - echo "Ensure Service"
-      - >
-        kubectl get svc "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" >/dev/null 2>&1 ||
-        kubectl expose deployment "${K8S_DEPLOYMENT_NAME}" --type=LoadBalancer --name="${K8S_DEPLOYMENT_NAME}" --port="${SVC_PORT}" --target-port="${APP_PORT}" -n "${K8S_NAMESPACE}"
+      # Ensure LoadBalancer Service
+      - "echo Ensure Service"
+      - "kubectl get svc \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" || kubectl expose deployment \"${K8S_DEPLOYMENT_NAME}\" --type=LoadBalancer --name=\"${K8S_DEPLOYMENT_NAME}\" --port=\"${SVC_PORT}\" --target-port=\"${APP_PORT}\" -n \"${K8S_NAMESPACE}\""
 
       # Rollout & diagnostics
-      - echo "Wait for rollout"
-      - >
-        kubectl rollout status deployment/"${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --timeout=10m ||
-        (echo "Rollout failed; showing diagnostics" &&
-         kubectl describe deploy "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" &&
-         kubectl get pods -l app="${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" -o wide &&
-         kubectl get events -n "${K8S_NAMESPACE}" --sort-by=.lastTimestamp | tail -n 40 &&
-         exit 1)
+      - "echo Wait for rollout"
+      - "kubectl rollout status deployment/\"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" --timeout=10m || (echo 'Rollout failed; diagnostics:' && kubectl describe deploy \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" && kubectl get pods -l app=\"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" -o wide && kubectl get events -n \"${K8S_NAMESPACE}\" --sort-by=.lastTimestamp | tail -n 40 && exit 1)"
 
-      # Print the external URL if present
-      - echo "Fetch LoadBalancer address"
-      - >
-        for i in $(seq 1 60); do
-          H=$(kubectl get svc "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" 2>/dev/null || true);
-          I=$(kubectl get svc "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || true);
-          if [ -n "$H$I" ]; then echo "Service URL: http://${H:-$I}:${SVC_PORT}"; break; fi;
-          echo "Waiting for EXTERNAL-IP... ($i/60)"; sleep 10;
-        done
+      # External address
+      - "echo Fetch LoadBalancer address"
+      - "sh -c 'for i in $(seq 1 60); do H=$(kubectl get svc \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" -o jsonpath=\"{.status.loadBalancer.ingress[0].hostname}\" 2>/dev/null || true); I=$(kubectl get svc \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" -o jsonpath=\"{.status.loadBalancer.ingress[0].ip}\" 2>/dev/null || true); if [ -n \"$H$I\" ]; then echo Service URL: http://${H:-$I}:${SVC_PORT}; break; fi; echo Waiting for EXTERNAL-IP...; sleep 10; done'"
 
 artifacts:
   files:
