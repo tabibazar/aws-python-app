@@ -49,7 +49,31 @@ phases:
 
       - "echo Configuring kubeconfig for ${EKS_CLUSTER_NAME}"
       - "export KUBECONFIG=/root/.kube/config"
-      - "aws eks update-kubeconfig --name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\""
+      - echo "=== EKS debug preflight ==="
+      - echo "AWS_REGION=${AWS_REGION}  EKS_CLUSTER_NAME=${EKS_CLUSTER_NAME}"
+
+      - echo "aws --version:"
+      - aws --version
+
+      - echo "Caller identity:"
+      - aws sts get-caller-identity || { echo "STS failed -> bad/expired creds"; exit 1; }
+
+      - echo "List clusters in region:"
+      - aws eks list-clusters --region "${AWS_REGION}" || true
+
+      - echo "Describe cluster (needs eks:DescribeCluster):"
+      - aws eks describe-cluster --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}" --output table || {
+      - echo "DescribeCluster failed (missing IAM perms or wrong name/region)"; exit 1;
+      - }
+
+      - echo "Now running update-kubeconfig with --debug"
+      - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}" --debug
+      - echo "== EKS kubeconfig setup =="
+      - aws sts get-caller-identity || { echo "Bad AWS creds for CodeBuild role"; exit 1; }
+      - aws eks describe-cluster --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}" \
+        || { echo "DescribeCluster failed (wrong name/region or missing IAM: eks:DescribeCluster)"; exit 1; }
+      - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}" \
+        || { echo "update-kubeconfig failed (network/VPC endpoint/public access issue)"; exit 1; }
 
       - "echo RBAC sanity checks"
       - "kubectl auth can-i create deployments -n \"${K8S_NAMESPACE}\" || { echo 'RBAC: cannot CREATE deployments'; exit 1; }"
