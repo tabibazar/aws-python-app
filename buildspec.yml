@@ -10,99 +10,82 @@ env:
     K8S_NAMESPACE: "default"
     K8S_DEPLOYMENT_NAME: "flask-app"
     K8S_CONTAINER_NAME: "flask-app"
+    DEPLOYMENT_FILE: "k8s/deployment.yaml"
+    SERVICE_FILE: "k8s/service.yml"
 
 phases:
   install:
     commands:
-      - "echo Installing kubectl, jq, and curl"
-      - "apt-get update -y"
-      - "apt-get install -y jq gettext-base curl"
-      - "curl -L -o /usr/local/bin/kubectl \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\""
-      - "chmod +x /usr/local/bin/kubectl"
-      - "echo Starting Docker daemon"
-      - "nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &"
-      - "timeout 60 sh -c 'until docker info >/dev/null 2>&1; do echo Waiting for Docker; sleep 2; done'"
-      - "docker version"
+      - echo "Installing kubectl, jq, and curl"
+      - apt-get update -y
+      - apt-get install -y jq gettext-base curl
+      - curl -L -o /usr/local/bin/kubectl "$(curl -Ls https://dl.k8s.io/release/stable.txt | xargs -I{} echo https://dl.k8s.io/release/{}/bin/linux/amd64/kubectl)"
+      - chmod +x /usr/local/bin/kubectl
+      - echo "Starting Docker daemon"
+      - nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &
+      - timeout 60 sh -c 'until docker info >/dev/null 2>&1; do echo "Waiting for Docker"; sleep 2; done'
+      - docker version
 
   pre_build:
     commands:
-      - "aws --version"
-      - "echo Using ECR URI ${ECR_URI}"
-      - "IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION}"
-      - "REGISTRY_HOST=$(echo \"${ECR_URI}\" | cut -d'/' -f1)"
-      - "echo Logging into ${REGISTRY_HOST}"
-      - "aws ecr get-login-password --region \"${AWS_REGION}\" | docker login --username AWS --password-stdin \"${REGISTRY_HOST}\""
+      - aws --version
+      - echo "Using ECR URI ${ECR_URI}"
+      - IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION}"
+      - REGISTRY_HOST="$(echo "${ECR_URI}" | cut -d'/' -f1)"
+      - echo "Logging into ${REGISTRY_HOST}"
+      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${REGISTRY_HOST}"
 
   build:
     commands:
-      - "echo Building image ${ECR_URI}:${IMAGE_TAG}"
-      - "docker build -t \"${ECR_URI}:${IMAGE_TAG}\" -t \"${ECR_URI}:latest\" ."
+      - echo "Building image ${ECR_URI}:${IMAGE_TAG}"
+      - docker build -t "${ECR_URI}:${IMAGE_TAG}" -t "${ECR_URI}:latest" .
 
   post_build:
     commands:
-      - "echo Pushing images"
-      - "docker push \"${ECR_URI}:${IMAGE_TAG}\""
-      - "docker push \"${ECR_URI}:latest\""
-      - "printf '{\"image\":\"%s\"}' \"${ECR_URI}:${IMAGE_TAG}\" > image.json"
+      - echo "Pushing images"
+      - docker push "${ECR_URI}:${IMAGE_TAG}"
+      - docker push "${ECR_URI}:latest"
+      - printf '{"image":"%s"}' "${ECR_URI}:${IMAGE_TAG}" > image.json
 
-      - "echo Configuring kubeconfig for ${EKS_CLUSTER_NAME}"
-      - "export KUBECONFIG=/root/.kube/config"
-      - "aws eks update-kubeconfig --name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\""
+      - echo "Configuring kubeconfig for ${EKS_CLUSTER_NAME}"
+      - export KUBECONFIG=/root/.kube/config
+      - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
 
-      # Auth & RBAC sanity checks so failures are obvious
-      - "echo Verifying we can obtain an EKS auth token"
-      - "aws eks get-token --cluster-name \"${EKS_CLUSTER_NAME}\" --region \"${AWS_REGION}\" >/dev/null || (echo 'IAM or EKS access missing: ensure eks:DescribeCluster AND an EKS Access Entry for this role'; exit 1)"
-      - "echo Current kubectl context"
-      - "kubectl config current-context || true"
-      - "echo Checking RBAC in namespace ${K8S_NAMESPACE}"
-      - "kubectl auth can-i get deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot GET deployments. Add AmazonEKSEditPolicy (namespace scoped) for CodeBuild role'; exit 1)"
-      - "kubectl auth can-i create deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot CREATE deployments'; exit 1)"
-      - "kubectl auth can-i update deployments -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot UPDATE deployments'; exit 1)"
-      - "kubectl auth can-i get services -n \"${K8S_NAMESPACE}\" || (echo 'RBAC: cannot GET services'; exit 1)"
+      - echo "RBAC check"
+      - kubectl auth can-i apply -n "${K8S_NAMESPACE}" || { echo "RBAC: cannot apply manifests"; exit 1; }
 
-      # Optional: apply repo-provided manifests if present
-      - "echo Applying k8s manifests - if any"
-      - "test -d k8s && kubectl apply -f k8s/ -n \"${K8S_NAMESPACE}\" || true"
+      # Apply manifests from k8s folder
+      - echo "Applying ${DEPLOYMENT_FILE} and ${SERVICE_FILE}"
+      - kubectl apply -f "${DEPLOYMENT_FILE}" -n "${K8S_NAMESPACE}"
+      - kubectl apply -f "${SERVICE_FILE}" -n "${K8S_NAMESPACE}"
 
-      # Create-or-update Deployment; first run creates with 1 replica
-      - "echo Ensuring Deployment exists or updating image"
-      - "kubectl get deploy \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" \
-         && kubectl set image deployment/\"${K8S_DEPLOYMENT_NAME}\" \"${K8S_CONTAINER_NAME}\"=\"${ECR_URI}:${IMAGE_TAG}\" -n \"${K8S_NAMESPACE}\" \
-         || kubectl create deployment \"${K8S_DEPLOYMENT_NAME}\" --image=\"${ECR_URI}:${IMAGE_TAG}\" --port=8000 --replicas=1 -n \"${K8S_NAMESPACE}\""
+      - echo "Patching Deployment image to ${ECR_URI}:${IMAGE_TAG}"
+      - kubectl set image deployment/"${K8S_DEPLOYMENT_NAME}" "${K8S_CONTAINER_NAME}"="${ECR_URI}:${IMAGE_TAG}" -n "${K8S_NAMESPACE}"
 
-      # Clean up any stale RS that still has a placeholder image
-      - "echo Removing any ReplicaSet with placeholder image reference"
-      - "for RS in $(kubectl get rs -n \"${K8S_NAMESPACE}\" -l app=\"${K8S_DEPLOYMENT_NAME}\" -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{.spec.template.spec.containers[0].image}{\"\\n\"}{end}' | awk '/REPLACE_ME_/ {print $1}'); do \
-            echo Deleting stale RS: $RS; kubectl delete rs \"$RS\" -n \"${K8S_NAMESPACE}\" || true; \
-         done"
+      - echo "Waiting for rollout"
+      - kubectl rollout status deployment/"${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --timeout=5m || {
+          echo "--- Events (last 80) ---";
+          kubectl get events -n "${K8S_NAMESPACE}" --sort-by=.lastTimestamp | tail -n 80;
+          echo "--- Pods ---";
+          kubectl get pods -n "${K8S_NAMESPACE}" -l app="${K8S_DEPLOYMENT_NAME}" -o wide;
+          P="$(kubectl get pods -n "${K8S_NAMESPACE}" -l app="${K8S_DEPLOYMENT_NAME}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)";
+          if [ -n "$P" ]; then
+            echo "--- Describe $P ---";
+            kubectl describe pod "$P" -n "${K8S_NAMESPACE}";
+            echo "--- Container logs ---";
+            kubectl logs "$P" -n "${K8S_NAMESPACE}" --container="${K8S_CONTAINER_NAME}" --tail=200 || true;
+          fi
+          exit 1;
+        }
 
-      # Ensure a LoadBalancer Service exists
-      - "echo Ensuring Service exists"
-      - "kubectl get svc \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" \
-         || kubectl expose deployment/\"${K8S_DEPLOYMENT_NAME}\" --type=LoadBalancer --name=\"${K8S_DEPLOYMENT_NAME}\" --port=80 --target-port=8000 -n \"${K8S_NAMESPACE}\""
-
-      # Scale to 1 for stability during initial rollouts (adjust later as needed)
-      - "echo Scaling deployment to 1 replica temporarily"
-      - "kubectl scale deploy/\"${K8S_DEPLOYMENT_NAME}\" --replicas=1 -n \"${K8S_NAMESPACE}\" || true"
-
-      # Rollout with rich diagnostics on failure
-      - "echo Waiting for rollout"
-      - "kubectl rollout status deployment/\"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" --timeout=5m || { \
-           echo '--- Events (last 80) ---'; kubectl get events -n \"${K8S_NAMESPACE}\" --sort-by=.lastTimestamp | tail -n 80; \
-           echo '--- Pods ---'; kubectl get pods -n \"${K8S_NAMESPACE}\" -l app=\"${K8S_DEPLOYMENT_NAME}\" -o wide; \
-           echo '--- Describe first pod ---'; P=$(kubectl get pods -n \"${K8S_NAMESPACE}\" -l app=\"${K8S_DEPLOYMENT_NAME}\" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
-             [ -n \"$P\" ] && kubectl describe pod \"$P\" -n \"${K8S_NAMESPACE}\" || true; \
-           echo '--- Container Logs (if running) ---'; \
-             [ -n \"$P\" ] && kubectl logs \"$P\" -n \"${K8S_NAMESPACE}\" --container=\"${K8S_CONTAINER_NAME}\" --tail=200 || true; \
-           exit 1; }"
-
-      # --- Print the external endpoint if we have one ---
-      - "echo Fetching Service external address (if provisioned)"
-      - "for i in $(seq 1 30); do \
-            EXTERNAL=$(kubectl get svc \"${K8S_DEPLOYMENT_NAME}\" -n \"${K8S_NAMESPACE}\" -o json | jq -r '.status.loadBalancer.ingress[0].hostname // .status.loadBalancer.ingress[0].ip // empty'); \
-            if [ -n \"$EXTERNAL\" ]; then echo \"Service external address: http://$EXTERNAL\"; break; fi; \
-            echo Waiting for EXTERNAL-IP...; sleep 10; \
-         done"
+      - echo "Fetching Service external address (if provisioned)"
+      - |
+        for i in $(seq 1 30); do
+          EXTERNAL="$(kubectl get svc "${K8S_DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" -o json | jq -r '.status.loadBalancer.ingress[0].hostname // .status.loadBalancer.ingress[0].ip // empty')";
+          [ -n "$EXTERNAL" ] && { echo "Service external address: http://$EXTERNAL"; break; }
+          echo "Waiting for EXTERNAL-IP...";
+          sleep 10;
+        done
 
 artifacts:
   files:
