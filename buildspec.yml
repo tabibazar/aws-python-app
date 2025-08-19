@@ -33,12 +33,6 @@ phases:
         done'
       - docker version
 
-      # Enable cross-arch builds (ARM64) using buildx + qemu
-      - echo "Enabling multi-arch buildx (ARM64)"
-      - docker run --privileged --rm tonistiigi/binfmt --install arm64 >/dev/null 2>&1 || true
-      - docker buildx create --name cbx --use >/dev/null 2>&1 || docker buildx use cbx
-      - docker buildx inspect --bootstrap
-
   pre_build:
     commands:
       - echo "Login to ECR"
@@ -47,9 +41,9 @@ phases:
 
   build:
     commands:
-      - echo "Build ARM64 image and push :latest"
-      # Buildx pushes directly; this guarantees an ARM64 manifest in ECR
-      - 'docker buildx build --platform linux/arm64 -t "${ECR_URI}:latest" --push .'
+      - echo "Build image and push :latest"
+      - 'docker build -t "${ECR_URI}:latest" .'
+      - 'docker push "${ECR_URI}:latest"'
 
   post_build:
     commands:
