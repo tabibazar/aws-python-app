@@ -29,7 +29,7 @@ phases:
 
   build:
     commands:
-      - echo "Build and push image"
+      - echo "Build and push image :latest"
       - docker build -t "${ECR_URI}:latest" .
       - docker push "${ECR_URI}:latest"
 
@@ -38,8 +38,31 @@ phases:
       - echo "Configure kubeconfig"
       - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
 
-      - echo "Apply manifests from k8s/"
+      - echo "Apply k8s manifests (k8s/)"
       - kubectl apply -n "${K8S_NAMESPACE}" -f k8s/
+
+      - echo "Ensure single container in the Pod spec (self-heal once if needed)"
+      - |
+        NAMES=$(kubectl get deploy ${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}')
+        COUNT=$(echo "$NAMES" | wc -w)
+        if [ "$COUNT" -gt 1 ]; then
+          echo "Found extra containers: $NAMES. Replacing with single 'flask-app'."
+          kubectl -n ${K8S_NAMESPACE} patch deploy ${DEPLOYMENT_NAME} --type=json \
+            -p="[{
+              \"op\":\"replace\",
+              \"path\":\"/spec/template/spec/containers\",
+              \"value\":[{
+                \"name\":\"flask-app\",
+                \"image\":\"${ECR_URI}:latest\",
+                \"imagePullPolicy\":\"Always\",
+                \"ports\":[{\"containerPort\":8000}],
+                \"env\":[{\"name\":\"FLASK_ENV\",\"value\":\"production\"}],
+                \"readinessProbe\":{\"httpGet\":{\"path\":\"/healthz\",\"port\":8000},\"initialDelaySeconds\":10,\"periodSeconds\":10},
+                \"livenessProbe\":{\"httpGet\":{\"path\":\"/healthz\",\"port\":8000},\"initialDelaySeconds\":30,\"periodSeconds\":20},
+                \"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"128Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\"}}
+              }]
+            }]"
+        fi
 
       - echo "Wait for rollout"
       - |
@@ -49,23 +72,21 @@ phases:
           kubectl get pods -l app=${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} -o wide || true
           for pod in $(kubectl get pods -l app=${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.items[*].metadata.name}'); do
             echo "=== $pod logs ==="
-            kubectl logs $pod -n ${K8S_NAMESPACE} --tail=50 || true
+            kubectl logs $pod -n ${K8S_NAMESPACE} --tail=100 || true
           done
           exit 1
         fi
 
-      - echo "Fetch LoadBalancer address"
+      - echo "Public URL"
       - |
-        for i in $(seq 1 60); do
-          H=$(kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" 2>/dev/null || true)
-          IP=$(kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || true)
-          if [ -n "$H$IP" ]; then
-            ADDR="${H:-$IP}"
-            echo "Service URL: http://${ADDR}:${SVC_PORT}"
-            break
-          fi
-          echo "Waiting for EXTERNAL-IP ($i/60)..."; sleep 10
-        done
+        HOST=$(kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        IP=$(kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        ADDR="${HOST:-$IP}"
+        if [ -n "$ADDR" ]; then
+          echo "Service URL: http://${ADDR}:${SVC_PORT}"
+        else
+          echo "Service external address not ready yet."
+        fi
 
 artifacts:
   files:
