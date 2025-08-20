@@ -25,11 +25,12 @@ phases:
     commands:
       - echo "Login to ECR"
       - REGISTRY_HOST="$(echo "${ECR_URI}" | cut -d/ -f1)"
-      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${REGISTRY_HOST}"
+      - aws ecr get-login-password --region "${AWS_REGION}" \
+          | docker login --username AWS --password-stdin "${REGISTRY_HOST}"
 
   build:
     commands:
-      - echo "Build and push :latest"
+      - echo "Build and push image"
       - docker build -t "${ECR_URI}:latest" .
       - docker push "${ECR_URI}:latest"
 
@@ -38,25 +39,34 @@ phases:
       - echo "Configure kubeconfig"
       - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
 
-      - echo "Apply k8s manifests"
+      - echo "Apply manifests from k8s/"
       - kubectl apply -n "${K8S_NAMESPACE}" -f k8s/
 
       - echo "Wait for rollout"
       - |
         if ! kubectl rollout status deployment/${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} --timeout=5m; then
-          echo "Rollout failed or timed out. Dumping diagnostics..."
-          echo "=== Deployment describe ==="
+          echo "Rollout failed. Dumping diagnostics..."
           kubectl describe deployment ${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} || true
-          echo "=== Pods list ==="
           kubectl get pods -l app=${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} -o wide || true
           for pod in $(kubectl get pods -l app=${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.items[*].metadata.name}'); do
-            echo "=== Describe $pod ==="
-            kubectl describe pod $pod -n ${K8S_NAMESPACE} || true
-            echo "=== Logs $pod (last 100 lines) ==="
-            kubectl logs $pod -n ${K8S_NAMESPACE} --tail=100 || true
+            echo "=== $pod logs ==="
+            kubectl logs $pod -n ${K8S_NAMESPACE} --tail=50 || true
           done
           exit 1
         fi
+
+      - echo "Fetch LoadBalancer address"
+      - |
+        for i in $(seq 1 60); do
+          H=$(kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" 2>/dev/null || true)
+          IP=$(kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || true)
+          if [ -n "$H$IP" ]; then
+            ADDR="${H:-$IP}"
+            echo "Service URL: http://${ADDR}:${SVC_PORT}"
+            break
+          fi
+          echo "Waiting for EXTERNAL-IP ($i/60)..."; sleep 10
+        done
 
 artifacts:
   files:
