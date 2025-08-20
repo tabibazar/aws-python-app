@@ -14,38 +14,40 @@ env:
 phases:
   install:
     commands:
-      - echo "Installing kubectl and starting Docker"
-      - apt-get update -y
-      - apt-get install -y curl
-      - curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+      - echo "Install kubectl and start Docker"
+      - apt-get update -y && apt-get install -y curl
+      - curl -sSL -o /usr/local/bin/kubectl \
+          "https://dl.k8s.io/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
       - chmod +x /usr/local/bin/kubectl
       - nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &
-      - |
-        timeout 60 sh -c 'until docker info >/dev/null 2>&1; do
-          echo "Waiting for Docker..."; sleep 2; done'
+      - timeout 60 sh -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
+
   pre_build:
     commands:
-      - echo "Logging into ECR"
+      - echo "Login to ECR"
       - REGISTRY_HOST="$(echo "${ECR_URI}" | cut -d/ -f1)"
-      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${REGISTRY_HOST}"
+      - aws ecr get-login-password --region "${AWS_REGION}" \
+          | docker login --username AWS --password-stdin "${REGISTRY_HOST}"
+
   build:
     commands:
-      - echo "Building and pushing image :latest"
+      - echo "Build and push image"
       - docker build -t "${ECR_URI}:latest" .
       - docker push "${ECR_URI}:latest"
+
   post_build:
     commands:
-      - echo "Configuring kubectl for EKS"
+      - echo "Update kubeconfig"
       - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
-      - echo "Applying Kubernetes manifests"
-      - kubectl apply -n "${K8S_NAMESPACE}" -f deployment.yml -f service.yml
-      - echo "Waiting for rollout"
-      - kubectl rollout status deployment/"${DEPLOYMENT_NAME}" -n "${K8S_NAMESPACE}" --timeout=10m
-      - echo "Fetching LoadBalancer address"
+      - echo "Apply k8s manifests"
+      - kubectl apply -n "${K8S_NAMESPACE}" -f k8s/
+      - echo "Wait for rollout"
+      - kubectl rollout status deployment/${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} --timeout=10m
+      - echo "Get LoadBalancer"
       - |
         for i in $(seq 1 60); do
-          H=$(kubectl get svc "${SERVICE_NAME}" -n "${K8S_NAMESPACE}" -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" 2>/dev/null || true)
-          IP=$(kubectl get svc "${SERVICE_NAME}" -n "${K8S_NAMESPACE}" -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || true)
+          H=$(kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" 2>/dev/null || true)
+          IP=$(kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>/dev/null || true)
           if [ -n "$H$IP" ]; then
             ADDR="${H:-$IP}"
             echo "Service URL: http://${ADDR}:${SVC_PORT}"
@@ -56,6 +58,5 @@ phases:
 
 artifacts:
   files:
-    - deployment.yml
-    - service.yml
+    - k8s/**
   discard-paths: yes
