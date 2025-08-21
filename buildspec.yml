@@ -2,57 +2,72 @@ version: 0.2
 
 env:
   variables:
-    # --- set these as CodeBuild environment variables (UI or pipeline) ---
-    TF_BUCKET: "502768277707-terraform-state-bucket"           # your remote state bucket
-    TF_KEY: "state/terraform.tfstate"                           # path inside the bucket (no s3://)
-    TF_REGION: "ca-central-1"                                   # backend + AWS region
-    CLUSTER_NAME: "curious-rock-crab"                           # your EKS cluster name
-    K8S_NAMESPACE: "default"                                    # target namespace
-    DEPLOYMENT_NAME: "flask-app"                                # app/deployment name
-    IMAGE_URI: "502768277707.dkr.ecr.ca-central-1.amazonaws.com/aws_python_app:latest"
-    # ---------------------------------------------------------------------
+    # Set these in CodeBuild project env (or override with parameter store/Secrets Manager).
+    AWS_REGION: "ca-central-1"
+    TF_BUCKET: "502768277707-terraform-state-bucket"
+    TF_KEY: "state/terraform.tfstate"
+    TF_REGION: "ca-central-1"
+    # Your EXISTING ECR repo URL
+    ECR_REPO_URL: "502768277707.dkr.ecr.ca-central-1.amazonaws.com/aws_python_app"
 
 phases:
   install:
+    runtime-versions:
+      docker: 20
     commands:
-      - echo "Installing Terraform"
-      - curl -sSLo terraform.zip "https://releases.hashicorp.com/terraform/1.13.0/terraform_1.13.0_linux_amd64.zip"
-      - unzip -o terraform.zip -d /usr/local/bin && rm -f terraform.zip
-      - terraform -version
+      - echo "Installing unzip and Terraform if missing"
+      - |
+        if ! command -v unzip >/dev/null 2>&1; then
+          (yum install -y unzip || (apt-get update -y && apt-get install -y unzip)) || true
+        fi
+      - |
+        if ! command -v terraform >/dev/null 2>&1; then
+          curl -sSLo /tmp/terraform.zip https://releases.hashicorp.com/terraform/1.13.0/terraform_1.13.0_linux_amd64.zip
+          unzip -o /tmp/terraform.zip -d /usr/local/bin
+          terraform -version
+        fi
+
   pre_build:
     commands:
-      - echo "Prepare working dir"
-      - cd terraform
+      - echo "Logging in to ECR: $ECR_REPO_URL"
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REPO_URL"
+      - echo "Set image tag from commit"
+      - COMMIT_SHA="${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}"
+      - IMAGE_TAG="${COMMIT_SHA:0:7}"
+      - IMAGE="${ECR_REPO_URL}:${IMAGE_TAG}"
+      - echo "IMAGE=$IMAGE"
+      # Export for Terraform variables (make sure your TF uses var.image + var.image_tag)
+      - export TF_VAR_image="$ECR_REPO_URL"
+      - export TF_VAR_image_tag="$IMAGE_TAG"
+
   build:
     commands:
-      - echo "Terraform init (S3 backend)"
-      - terraform init -input=false \
-          -backend-config="bucket=${TF_BUCKET}" \
-          -backend-config="key=${TF_KEY}" \
-          -backend-config="region=${TF_REGION}"
+      - echo "Building and pushing container"
+      - docker build -t "$IMAGE" .
+      - docker push "$IMAGE"
+      - echo "image=$IMAGE" > image.env
 
-      - echo "Terraform validate"
-      - terraform validate
+      - echo "Terraform init/plan (in terraform/)"
+      - terraform -chdir=terraform init -input=false \
+          -backend-config="bucket=$TF_BUCKET" \
+          -backend-config="key=$TF_KEY" \
+          -backend-config="region=$TF_REGION"
+      - terraform -chdir=terraform plan -input=false -out=tfplan
 
-      - echo "Terraform plan"
-      - terraform plan -input=false -out=tfplan \
-          -var="region=${TF_REGION}" \
-          -var="cluster_name=${CLUSTER_NAME}" \
-          -var="namespace=${K8S_NAMESPACE}" \
-          -var="app_name=${DEPLOYMENT_NAME}" \
-          -var="image=${IMAGE_URI}"
   post_build:
     commands:
       - echo "Terraform apply"
-      - terraform apply -auto-approve tfplan
-      - echo "Outputs (if any):"
-      - terraform output || true
+      - terraform -chdir=terraform apply -input=false -auto-approve tfplan
+
+      # Helpful outputs if you defined them (service_hostname/service_ip)
+      - echo "Collecting Terraform outputs"
+      - terraform -chdir=terraform output -json > tf-outputs.json || true
+      - echo "Service hostname (if any):"
+      - terraform -chdir=terraform output -raw service_hostname || true
+      - echo "Service IP (if any):"
+      - terraform -chdir=terraform output -raw service_ip || true
 
 artifacts:
   files:
-    - '**/*'
-  discard-paths: yes
-
-cache:
-  paths:
-    - 'terraform/.terraform/**/*'
+    - tf-outputs.json
+    - image.env
