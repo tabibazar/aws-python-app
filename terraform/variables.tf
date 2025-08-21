@@ -63,3 +63,9 @@ variable "enable_legacy_manifests" {
   type        = bool
   default     = false
 }
+
+variable "state_bucket_name" {
+  description = "Name of the existing S3 bucket used for Terraform backend state (to expose its ARN as an output)."
+  type        = string
+  default     = "502768277707-terraform-state-bucket"
+}

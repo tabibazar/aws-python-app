@@ -69,6 +69,8 @@ phases:
       - 'terraform -chdir=terraform output -raw service_hostname || true'
       - 'echo "Service IP (if any):"'
       - 'terraform -chdir=terraform output -raw service_ip || true'
+      - 'echo "State bucket ARN (if resolvable):"'
+      - 'terraform -chdir=terraform output -raw state_bucket_arn || true'
 
 artifacts:
   files:
