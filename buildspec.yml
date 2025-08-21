@@ -1,94 +1,58 @@
 version: 0.2
 
 env:
-  git-credential-helper: yes
   variables:
-    AWS_REGION: "ca-central-1"
-    ECR_URI: "502768277707.dkr.ecr.ca-central-1.amazonaws.com/aws_python_app"
-    EKS_CLUSTER_NAME: "curious-rock-crab"
-    K8S_NAMESPACE: "default"
-    DEPLOYMENT_NAME: "flask-app"
-    SERVICE_NAME: "flask-app"
-    SVC_PORT: "80"
+    # --- set these as CodeBuild environment variables (UI or pipeline) ---
+    TF_BUCKET: "502768277707-terraform-state-bucket"           # your remote state bucket
+    TF_KEY: "state/terraform.tfstate"                           # path inside the bucket (no s3://)
+    TF_REGION: "ca-central-1"                                   # backend + AWS region
+    CLUSTER_NAME: "curious-rock-crab"                           # your EKS cluster name
+    K8S_NAMESPACE: "default"                                    # target namespace
+    DEPLOYMENT_NAME: "flask-app"                                # app/deployment name
+    IMAGE_URI: "502768277707.dkr.ecr.ca-central-1.amazonaws.com/aws_python_app:latest"
+    # ---------------------------------------------------------------------
 
 phases:
   install:
     commands:
-      - echo "Install kubectl and start Docker"
-      - apt-get update -y && apt-get install -y curl
-      - curl -L -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-      - chmod +x /usr/local/bin/kubectl
-      - nohup /usr/local/bin/dockerd-entrypoint.sh >/tmp/dockerd.log 2>&1 &
-      - timeout 60 sh -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
-
+      - echo "Installing Terraform"
+      - curl -sSLo terraform.zip "https://releases.hashicorp.com/terraform/1.13.0/terraform_1.13.0_linux_amd64.zip"
+      - unzip -o terraform.zip -d /usr/local/bin && rm -f terraform.zip
+      - terraform -version
   pre_build:
     commands:
-      - echo "Login to ECR"
-      - REGISTRY_HOST="$(echo "${ECR_URI}" | cut -d/ -f1)"
-      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${REGISTRY_HOST}"
-
+      - echo "Prepare working dir"
+      - cd terraform
   build:
     commands:
-      - echo "Build and push image :latest"
-      - docker build -t "${ECR_URI}:latest" .
-      - docker push "${ECR_URI}:latest"
+      - echo "Terraform init (S3 backend)"
+      - terraform init -input=false \
+          -backend-config="bucket=${TF_BUCKET}" \
+          -backend-config="key=${TF_KEY}" \
+          -backend-config="region=${TF_REGION}"
 
+      - echo "Terraform validate"
+      - terraform validate
+
+      - echo "Terraform plan"
+      - terraform plan -input=false -out=tfplan \
+          -var="region=${TF_REGION}" \
+          -var="cluster_name=${CLUSTER_NAME}" \
+          -var="namespace=${K8S_NAMESPACE}" \
+          -var="app_name=${DEPLOYMENT_NAME}" \
+          -var="image=${IMAGE_URI}"
   post_build:
     commands:
-      - echo "Configure kubeconfig"
-      - aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
-
-      - echo "Apply k8s manifests (k8s/)"
-      - kubectl apply -n "${K8S_NAMESPACE}" -f k8s/
-
-      - echo "Ensure single container in the Pod spec (self-heal once if needed)"
-      - |
-        NAMES=$(kubectl get deploy ${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}')
-        COUNT=$(echo "$NAMES" | wc -w)
-        if [ "$COUNT" -gt 1 ]; then
-          echo "Found extra containers: $NAMES. Replacing with single 'flask-app'."
-          kubectl -n ${K8S_NAMESPACE} patch deploy ${DEPLOYMENT_NAME} --type=json \
-            -p="[{
-              \"op\":\"replace\",
-              \"path\":\"/spec/template/spec/containers\",
-              \"value\":[{
-                \"name\":\"flask-app\",
-                \"image\":\"${ECR_URI}:latest\",
-                \"imagePullPolicy\":\"Always\",
-                \"ports\":[{\"containerPort\":8000}],
-                \"env\":[{\"name\":\"FLASK_ENV\",\"value\":\"production\"}],
-                \"readinessProbe\":{\"httpGet\":{\"path\":\"/healthz\",\"port\":8000},\"initialDelaySeconds\":10,\"periodSeconds\":10},
-                \"livenessProbe\":{\"httpGet\":{\"path\":\"/healthz\",\"port\":8000},\"initialDelaySeconds\":30,\"periodSeconds\":20},
-                \"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"128Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\"}}
-              }]
-            }]"
-        fi
-
-      - echo "Wait for rollout"
-      - |
-        if ! kubectl rollout status deployment/${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} --timeout=5m; then
-          echo "Rollout failed. Dumping diagnostics..."
-          kubectl describe deployment ${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} || true
-          kubectl get pods -l app=${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} -o wide || true
-          for pod in $(kubectl get pods -l app=${DEPLOYMENT_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.items[*].metadata.name}'); do
-            echo "=== $pod logs ==="
-            kubectl logs $pod -n ${K8S_NAMESPACE} --tail=100 || true
-          done
-          exit 1
-        fi
-
-      - echo "Public URL"
-      - |
-        HOST=$(kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-        IP=$(kubectl get svc ${SERVICE_NAME} -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-        ADDR="${HOST:-$IP}"
-        if [ -n "$ADDR" ]; then
-          echo "Service URL: http://${ADDR}:${SVC_PORT}"
-        else
-          echo "Service external address not ready yet."
-        fi
+      - echo "Terraform apply"
+      - terraform apply -auto-approve tfplan
+      - echo "Outputs (if any):"
+      - terraform output || true
 
 artifacts:
   files:
-    - k8s/**
+    - '**/*'
   discard-paths: yes
+
+cache:
+  paths:
+    - 'terraform/.terraform/**/*'
