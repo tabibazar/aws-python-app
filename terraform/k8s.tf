@@ -74,8 +74,6 @@ resource "kubernetes_service_v1" "svc" {
 
   timeouts {
     create = "20m"
-    update = "20m"
-    delete = "10m"
   }
 
   spec {
