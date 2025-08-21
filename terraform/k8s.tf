@@ -70,6 +70,14 @@ resource "kubernetes_service_v1" "svc" {
     labels    = { app = var.app_name }
   }
 
+  wait_for_load_balancer = false
+
+  timeouts {
+    create = "20m"
+    update = "20m"
+    delete = "10m"
+  }
+
   spec {
     selector = { app = var.app_name }
     port {
