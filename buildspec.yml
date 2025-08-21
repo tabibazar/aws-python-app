@@ -19,58 +19,51 @@ phases:
     runtime-versions:
       python: 3.11
     commands:
-      - echo "Installing unzip, kubectl and Terraform if missing"
-      - if ! command -v unzip >/dev/null 2>&1; then (yum install -y unzip || (apt-get update -y && apt-get install -y unzip)) || true; fi
-      - |
-        if ! command -v kubectl >/dev/null 2>&1; then \
-          echo "Installing kubectl"; \
-          curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
-          chmod +x /usr/local/bin/kubectl && kubectl version --client; \
-        else \
-          kubectl version --client; \
-        fi
-      - if ! command -v terraform >/dev/null 2>&1; then curl -sSLo /tmp/terraform.zip https://releases.hashicorp.com/terraform/1.13.0/terraform_1.13.0_linux_amd64.zip && unzip -o /tmp/terraform.zip -d /usr/local/bin && terraform -version; fi
+      - 'echo "Installing unzip, kubectl and Terraform if missing"'
+      - 'if ! command -v unzip >/dev/null 2>&1; then (yum install -y unzip || (apt-get update -y && apt-get install -y unzip)) || true; fi'
+      - 'if ! command -v kubectl >/dev/null 2>&1; then echo "Installing kubectl"; curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && chmod +x /usr/local/bin/kubectl && kubectl version --client; else kubectl version --client; fi'
+      - 'if ! command -v terraform >/dev/null 2>&1; then curl -sSLo /tmp/terraform.zip https://releases.hashicorp.com/terraform/1.13.0/terraform_1.13.0_linux_amd64.zip && unzip -o /tmp/terraform.zip -d /usr/local/bin && terraform -version; fi'
 
   pre_build:
     commands:
       - 'echo "Logging in to ECR: $ECR_REPO_URL"'
-      - ECR_REGISTRY="${ECR_REPO_URL%%/*}"
+      - 'ECR_REGISTRY="${ECR_REPO_URL%%/*}"'
       - 'echo "Derived ECR registry: $ECR_REGISTRY"'
-      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
-      - echo "Set image tag from commit"
-      - COMMIT_SHA="${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}"
-      - IMAGE_TAG="$(printf '%s' "$COMMIT_SHA" | cut -c1-7)"
-      - IMAGE="${ECR_REPO_URL}:${IMAGE_TAG}"
-      - echo "IMAGE=$IMAGE"
+      - 'aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"'
+      - 'echo "Set image tag from commit"'
+      - 'COMMIT_SHA="${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}"'
+      - 'IMAGE_TAG="$(printf ''%s'' "$COMMIT_SHA" | cut -c1-7)"'
+      - 'IMAGE="${ECR_REPO_URL}:${IMAGE_TAG}"'
+      - 'echo "IMAGE=$IMAGE"'
       # Export for Terraform variables (make sure your TF uses var.image + var.image_tag)
-      - export TF_VAR_image="$ECR_REPO_URL:$IMAGE_TAG"
-      - echo "Configuring kubeconfig for EKS cluster: $CLUSTER_NAME in $AWS_REGION"
-      - aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
-      - echo "Pre-cleanup: deleting existing K8s resources to avoid 'already exists'"
-      - kubectl -n "$NAMESPACE" delete deployment "$APP_NAME" --ignore-not-found
-      - kubectl -n "$NAMESPACE" delete service "$APP_NAME" --ignore-not-found
+      - 'export TF_VAR_image="${ECR_REPO_URL}:${IMAGE_TAG}"'
+      - 'echo "Configuring kubeconfig for EKS cluster: $CLUSTER_NAME in $AWS_REGION"'
+      - 'aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"'
+      - 'echo "Pre-cleanup: deleting existing K8s resources to avoid ''already exists''"'
+      - 'kubectl -n "$NAMESPACE" delete deployment "$APP_NAME" --ignore-not-found'
+      - 'kubectl -n "$NAMESPACE" delete service "$APP_NAME" --ignore-not-found'
 
   build:
     commands:
-      - echo "Building and pushing container"
-      - docker build -t "$IMAGE" -f dockerfile .
-      - docker push "$IMAGE"
-      - echo "image=$IMAGE" > image.env
-      - echo "Terraform init/plan (in terraform/)"
-      - terraform -chdir=terraform init -input=false -backend-config="bucket=$TF_BUCKET" -backend-config="key=$TF_KEY" -backend-config="region=$TF_REGION"
-      - terraform -chdir=terraform plan -input=false -out=tfplan
+      - 'echo "Building and pushing container"'
+      - 'docker build -t "$IMAGE" -f dockerfile .'
+      - 'docker push "$IMAGE"'
+      - 'echo "image=$IMAGE" > image.env'
+      - 'echo "Terraform init/plan (in terraform/)"'
+      - 'terraform -chdir=terraform init -input=false -backend-config="bucket=$TF_BUCKET" -backend-config="key=$TF_KEY" -backend-config="region=$TF_REGION"'
+      - 'terraform -chdir=terraform plan -input=false -out=tfplan'
 
   post_build:
     commands:
-      - echo "Terraform apply"
-      - terraform -chdir=terraform apply -input=false -auto-approve tfplan
+      - 'echo "Terraform apply"'
+      - 'terraform -chdir=terraform apply -input=false -auto-approve tfplan'
       # Helpful outputs if you defined them (service_hostname/service_ip)
-      - echo "Collecting Terraform outputs"
-      - terraform -chdir=terraform output -json > tf-outputs.json || true
-      - echo "Service hostname (if any):"
-      - terraform -chdir=terraform output -raw service_hostname || true
-      - echo "Service IP (if any):"
-      - terraform -chdir=terraform output -raw service_ip || true
+      - 'echo "Collecting Terraform outputs"'
+      - 'terraform -chdir=terraform output -json > tf-outputs.json || true'
+      - 'echo "Service hostname (if any):"'
+      - 'terraform -chdir=terraform output -raw service_hostname || true'
+      - 'echo "Service IP (if any):"'
+      - 'terraform -chdir=terraform output -raw service_ip || true'
 
 artifacts:
   files:
