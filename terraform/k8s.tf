@@ -1,13 +1,14 @@
 locals {
-  deploy_ns = var.namespace == "default" ? "default" : kubernetes_namespace_v1.ns[0].metadata[0].name
+  deploy_ns = (var.enable_k8s && var.namespace != "default") ? kubernetes_namespace_v1.ns[0].metadata[0].name : var.namespace
 }
 
 resource "kubernetes_namespace_v1" "ns" {
-  count    = var.namespace == "default" ? 0 : 1
+  count    = (var.enable_k8s && var.namespace != "default") ? 1 : 0
   metadata { name = var.namespace }
 }
 
 resource "kubernetes_deployment_v1" "app" {
+  count = var.enable_k8s ? 1 : 0
   metadata {
     name      = var.app_name
     namespace = local.deploy_ns
@@ -64,6 +65,7 @@ resource "kubernetes_deployment_v1" "app" {
 }
 
 resource "kubernetes_service_v1" "svc" {
+  count = var.enable_k8s ? 1 : 0
   metadata {
     name      = var.app_name
     namespace = local.deploy_ns

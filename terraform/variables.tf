@@ -69,3 +69,9 @@ variable "state_bucket_name" {
   type        = string
   default     = "502768277707-terraform-state-bucket"
 }
+
+variable "enable_k8s" {
+  description = "Whether to create Kubernetes resources (set false to skip when cluster is unreachable)."
+  type        = bool
+  default     = true
+}
