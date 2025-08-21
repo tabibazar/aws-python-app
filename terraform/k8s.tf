@@ -70,9 +70,15 @@ resource "kubernetes_service_v1" "svc" {
     name      = var.app_name
     namespace = local.deploy_ns
     labels    = { app = var.app_name }
+    annotations = {
+      # Use an internet-facing Network Load Balancer on AWS/EKS
+      "service.beta.kubernetes.io/aws-load-balancer-type"   = "nlb"
+      "service.beta.kubernetes.io/aws-load-balancer-scheme" = "internet-facing"
+    }
   }
 
-  wait_for_load_balancer = true
+  # Do not block terraform apply waiting for external LB; it can be slow on some clusters
+  wait_for_load_balancer = false
 
   timeouts {
     create = "20m"

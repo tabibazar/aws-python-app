@@ -5,9 +5,15 @@ resource "kubernetes_service_v1" "flask_app" {
     labels = {
       app = "flask-app"
     }
+    annotations = {
+      # Use an internet-facing Network Load Balancer on AWS/EKS
+      "service.beta.kubernetes.io/aws-load-balancer-type"   = "nlb"
+      "service.beta.kubernetes.io/aws-load-balancer-scheme" = "internet-facing"
+    }
   }
 
-  wait_for_load_balancer = true
+  # Do not block terraform apply waiting for external LB; it can be slow on some clusters
+  wait_for_load_balancer = false
 
   spec {
     selector = {

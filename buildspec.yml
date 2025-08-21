@@ -38,10 +38,18 @@ phases:
       # Export for Terraform variables (make sure your TF uses var.image + var.image_tag)
       - 'export TF_VAR_image="${ECR_REPO_URL}:${IMAGE_TAG}"'
       - 'echo "Configuring kubeconfig for EKS cluster: $CLUSTER_NAME in $AWS_REGION"'
-      - 'aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"'
-      - 'echo "Pre-cleanup: deleting existing K8s resources to avoid ''already exists''"'
-      - 'kubectl -n "$NAMESPACE" delete deployment "$APP_NAME" --ignore-not-found'
-      - 'kubectl -n "$NAMESPACE" delete service "$APP_NAME" --ignore-not-found'
+      - 'aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION" || true'
+      - 'echo "Checking EKS API endpoint DNS reachability"'
+      - 'K8S_AVAILABLE=1'
+      - 'CLUSTER_SERVER="$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)"'
+      - 'CLUSTER_HOST="${CLUSTER_SERVER#https://}"'
+      - 'echo "Discovered cluster server: ${CLUSTER_SERVER:-<none>}"'
+      - 'if [ -z "$CLUSTER_HOST" ]; then echo "No cluster server found in kubeconfig"; K8S_AVAILABLE=0; fi'
+      - 'if [ "$K8S_AVAILABLE" = "1" ]; then if command -v nslookup >/dev/null 2>&1; then nslookup "$CLUSTER_HOST" >/dev/null 2>&1 || K8S_AVAILABLE=0; elif command -v getent >/dev/null 2>&1; then getent hosts "$CLUSTER_HOST" >/dev/null 2>&1 || K8S_AVAILABLE=0; else getent_cmd_missing=1; fi; fi'
+      - 'if [ "$K8S_AVAILABLE" = "1" ]; then echo "K8s endpoint DNS looks reachable"; else echo "WARNING: K8s endpoint DNS not reachable. Will skip kubectl pre-cleanup and disable Terraform k8s resources."; fi'
+      - 'if [ "$K8S_AVAILABLE" != "1" ]; then export TF_VAR_enable_k8s=false; fi'
+      - 'PRE_CLEANUP=${PRE_CLEANUP:-true}'
+      - 'if [ "$K8S_AVAILABLE" = "1" ] && [ "$PRE_CLEANUP" = "true" ]; then echo "Pre-cleanup: deleting existing K8s resources to avoid ''already exists''"; kubectl -n "$NAMESPACE" delete deployment "$APP_NAME" --ignore-not-found; kubectl -n "$NAMESPACE" delete service "$APP_NAME" --ignore-not-found; else echo "Skipping kubectl pre-cleanup (K8S_AVAILABLE=$K8S_AVAILABLE, PRE_CLEANUP=$PRE_CLEANUP)"; fi'
 
   build:
     commands:
