@@ -7,6 +7,8 @@ resource "kubernetes_service_v1" "flask_app" {
     }
   }
 
+  wait_for_load_balancer = true
+
   spec {
     selector = {
       app = "flask-app"

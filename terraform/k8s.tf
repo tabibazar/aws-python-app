@@ -72,7 +72,7 @@ resource "kubernetes_service_v1" "svc" {
     labels    = { app = var.app_name }
   }
 
-  wait_for_load_balancer = false
+  wait_for_load_balancer = true
 
   timeouts {
     create = "20m"
