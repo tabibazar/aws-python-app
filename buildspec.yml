@@ -50,18 +50,23 @@ phases:
       - 'docker push "$IMAGE"'
       - 'echo "image=$IMAGE" > image.env'
       - 'echo "Terraform init/plan (in terraform/)"'
-      - 'terraform -chdir=terraform init -input=false -backend-config="bucket=$TF_BUCKET" -backend-config="key=$TF_KEY" -backend-config="region=$TF_REGION"'
-      - 'echo "Planning with lock timeout and retries"'
+      - 'echo "Initializing Terraform backend (optional DynamoDB locking if TF_DDB_TABLE is set)"'
+      - 'BACKEND_ARGS="-backend-config=bucket=$TF_BUCKET -backend-config=key=$TF_KEY -backend-config=region=$TF_REGION"'
+      - 'if [ -n "${TF_DDB_TABLE:-}" ]; then BACKEND_ARGS="$BACKEND_ARGS -backend-config=dynamodb_table=$TF_DDB_TABLE"; fi'
+      - 'terraform -chdir=terraform init -input=false $BACKEND_ARGS'
+      - 'echo "Planning with shorter lock timeout and retries"'
       - 'set -eu'
       - 'PLAN_FILE=tfplan'
-      - 'for attempt in 1 2 3 4 5; do echo "terraform plan attempt $attempt"; if terraform -chdir=terraform plan -input=false -lock-timeout=5m -out="$PLAN_FILE"; then echo "Plan succeeded"; break; else echo "Plan failed (attempt $attempt). Sleeping before retry..."; sleep $((attempt*10)); fi; done'
+      - 'TF_LOCK_TIMEOUT=${TF_LOCK_TIMEOUT:-30s}'
+      - 'for attempt in 1 2 3 4 5; do echo "terraform plan attempt $attempt (lock-timeout=$TF_LOCK_TIMEOUT)"; if terraform -chdir=terraform plan -input=false -lock-timeout="$TF_LOCK_TIMEOUT" -out="$PLAN_FILE"; then echo "Plan succeeded"; break; else echo "Plan failed (attempt $attempt). Sleeping before retry..."; sleep $((attempt*5)); fi; done'
       - 'if [ ! -f "terraform/$PLAN_FILE" ]; then echo "ERROR: Plan did not produce a plan file after retries."; exit 1; fi'
 
   post_build:
     commands:
       - 'echo "Terraform apply"'
       - 'PLAN_FILE=tfplan'
-      - 'if [ -f "terraform/$PLAN_FILE" ]; then echo "Applying plan $PLAN_FILE"; terraform -chdir=terraform apply -input=false -lock-timeout=5m -auto-approve "$PLAN_FILE"; else echo "No plan file found. Skipping apply."; fi'
+      - 'TF_LOCK_TIMEOUT=${TF_LOCK_TIMEOUT:-30s}'
+      - 'if [ -f "terraform/$PLAN_FILE" ]; then echo "Applying plan $PLAN_FILE with lock-timeout=$TF_LOCK_TIMEOUT"; terraform -chdir=terraform apply -input=false -lock-timeout="$TF_LOCK_TIMEOUT" -auto-approve "$PLAN_FILE"; else echo "No plan file found. Skipping apply."; fi'
       # Helpful outputs if you defined them (service_hostname/service_ip)
       - 'echo "Collecting Terraform outputs"'
       - 'terraform -chdir=terraform output -json > tf-outputs.json || true'
