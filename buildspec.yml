@@ -52,7 +52,7 @@ phases:
       - 'echo "Terraform init/plan (in terraform/)"'
       - 'terraform -chdir=terraform init -input=false -backend-config="bucket=$TF_BUCKET" -backend-config="key=$TF_KEY" -backend-config="region=$TF_REGION"'
       - 'echo "Planning with lock timeout and retries"'
-      - 'set -euo pipefail'
+      - 'set -eu'
       - 'PLAN_FILE=tfplan'
       - 'for attempt in 1 2 3 4 5; do echo "terraform plan attempt $attempt"; if terraform -chdir=terraform plan -input=false -lock-timeout=5m -out="$PLAN_FILE"; then echo "Plan succeeded"; break; else echo "Plan failed (attempt $attempt). Sleeping before retry..."; sleep $((attempt*10)); fi; done'
       - 'if [ ! -f "terraform/$PLAN_FILE" ]; then echo "ERROR: Plan did not produce a plan file after retries."; exit 1; fi'
