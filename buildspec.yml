@@ -51,12 +51,17 @@ phases:
       - 'echo "image=$IMAGE" > image.env'
       - 'echo "Terraform init/plan (in terraform/)"'
       - 'terraform -chdir=terraform init -input=false -backend-config="bucket=$TF_BUCKET" -backend-config="key=$TF_KEY" -backend-config="region=$TF_REGION"'
-      - 'terraform -chdir=terraform plan -input=false -out=tfplan'
+      - 'echo "Planning with lock timeout and retries"'
+      - 'set -euo pipefail'
+      - 'PLAN_FILE=tfplan'
+      - 'for attempt in 1 2 3 4 5; do echo "terraform plan attempt $attempt"; if terraform -chdir=terraform plan -input=false -lock-timeout=5m -out="$PLAN_FILE"; then echo "Plan succeeded"; break; else echo "Plan failed (attempt $attempt). Sleeping before retry..."; sleep $((attempt*10)); fi; done'
+      - 'if [ ! -f "terraform/$PLAN_FILE" ]; then echo "ERROR: Plan did not produce a plan file after retries."; exit 1; fi'
 
   post_build:
     commands:
       - 'echo "Terraform apply"'
-      - 'terraform -chdir=terraform apply -input=false -auto-approve tfplan'
+      - 'PLAN_FILE=tfplan'
+      - 'if [ -f "terraform/$PLAN_FILE" ]; then echo "Applying plan $PLAN_FILE"; terraform -chdir=terraform apply -input=false -lock-timeout=5m -auto-approve "$PLAN_FILE"; else echo "No plan file found. Skipping apply."; fi'
       # Helpful outputs if you defined them (service_hostname/service_ip)
       - 'echo "Collecting Terraform outputs"'
       - 'terraform -chdir=terraform output -json > tf-outputs.json || true'
