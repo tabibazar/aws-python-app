@@ -1,4 +1,5 @@
 resource "kubernetes_service_v1" "flask_app" {
+  count = var.enable_legacy_manifests ? 1 : 0
   metadata {
     name = "flask-app"
     labels = {

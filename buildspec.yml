@@ -37,8 +37,7 @@ phases:
       - IMAGE="${ECR_REPO_URL}:${IMAGE_TAG}"
       - echo "IMAGE=$IMAGE"
       # Export for Terraform variables (make sure your TF uses var.image + var.image_tag)
-      - export TF_VAR_image="$ECR_REPO_URL"
-      - export TF_VAR_image_tag="$IMAGE_TAG"
+      - export TF_VAR_image="$ECR_REPO_URL:$IMAGE_TAG"
 
   build:
     commands:

@@ -17,7 +17,13 @@ variable "replicas" {
 }
 
 variable "container_image" {
-  description = "ECR image for the app"
+  description = "ECR image for the app (legacy, unused)"
+  type        = string
+  default     = "502768277707.dkr.ecr.ca-central-1.amazonaws.com/aws_python_app:latest"
+}
+
+variable "image" {
+  description = "Full container image reference including tag (e.g., REPO_URL:TAG)"
   type        = string
   default     = "502768277707.dkr.ecr.ca-central-1.amazonaws.com/aws_python_app:latest"
 }
@@ -44,4 +50,16 @@ variable "cluster_name" {
   description = "Name of the EKS cluster"
   type        = string
   default     = "curious-rock-crab"
+}
+
+variable "ecr_name" {
+  description = "Name of the existing ECR repository"
+  type        = string
+  default     = "aws_python_app"
+}
+
+variable "enable_legacy_manifests" {
+  description = "Whether to enable legacy k8s resources defined in deployment.tf/service.tf"
+  type        = bool
+  default     = false
 }

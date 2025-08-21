@@ -1,16 +1,21 @@
+locals {
+  deploy_ns = var.namespace == "default" ? "default" : kubernetes_namespace_v1.ns[0].metadata[0].name
+}
+
 resource "kubernetes_namespace_v1" "ns" {
+  count    = var.namespace == "default" ? 0 : 1
   metadata { name = var.namespace }
 }
 
 resource "kubernetes_deployment_v1" "app" {
   metadata {
     name      = var.app_name
-    namespace = kubernetes_namespace_v1.ns.metadata[0].name
+    namespace = local.deploy_ns
     labels    = { app = var.app_name }
   }
 
   spec {
-    replicas = 2
+    replicas = var.replicas
     selector { match_labels = { app = var.app_name } }
 
     template {
@@ -55,7 +60,7 @@ resource "kubernetes_deployment_v1" "app" {
 resource "kubernetes_service_v1" "svc" {
   metadata {
     name      = var.app_name
-    namespace = kubernetes_namespace_v1.ns.metadata[0].name
+    namespace = local.deploy_ns
     labels    = { app = var.app_name }
   }
 
