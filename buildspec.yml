@@ -9,14 +9,26 @@ env:
     TF_REGION: "ca-central-1"
     # Your EXISTING ECR repo URL
     ECR_REPO_URL: "502768277707.dkr.ecr.ca-central-1.amazonaws.com/aws_python_app"
+    # Kubernetes parameters for pre-cleanup
+    CLUSTER_NAME: "curious-rock-crab"
+    NAMESPACE: "default"
+    APP_NAME: "flask-app"
 
 phases:
   install:
     runtime-versions:
       python: 3.11
     commands:
-      - echo "Installing unzip and Terraform if missing"
+      - echo "Installing unzip, kubectl and Terraform if missing"
       - if ! command -v unzip >/dev/null 2>&1; then (yum install -y unzip || (apt-get update -y && apt-get install -y unzip)) || true; fi
+      - |
+        if ! command -v kubectl >/dev/null 2>&1; then \
+          echo "Installing kubectl"; \
+          curl -sSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -sSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
+          chmod +x /usr/local/bin/kubectl && kubectl version --client; \
+        else \
+          kubectl version --client; \
+        fi
       - if ! command -v terraform >/dev/null 2>&1; then curl -sSLo /tmp/terraform.zip https://releases.hashicorp.com/terraform/1.13.0/terraform_1.13.0_linux_amd64.zip && unzip -o /tmp/terraform.zip -d /usr/local/bin && terraform -version; fi
 
   pre_build:
@@ -32,6 +44,11 @@ phases:
       - echo "IMAGE=$IMAGE"
       # Export for Terraform variables (make sure your TF uses var.image + var.image_tag)
       - export TF_VAR_image="$ECR_REPO_URL:$IMAGE_TAG"
+      - echo "Configuring kubeconfig for EKS cluster: $CLUSTER_NAME in $AWS_REGION"
+      - aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+      - echo "Pre-cleanup: deleting existing K8s resources to avoid 'already exists'"
+      - kubectl -n "$NAMESPACE" delete deployment "$APP_NAME" --ignore-not-found
+      - kubectl -n "$NAMESPACE" delete service "$APP_NAME" --ignore-not-found
 
   build:
     commands:
