@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 
 # Terraform
 .terraform/
@@ -8,3 +9,25 @@ crash.log
 .terraform/
 *.tfstate*
 crash.log
+=======
+# Terraform
+.terraform/
+*.tfstate*
+*.tfvars
+crash.log
+override.tf
+*.override.tf
+**/.terraform/*
+**/.terraform.lock.hcl
+# macOS & IDE
+.DS_Store
+.idea/
+.vscode/
+# Terraform
+.terraform/
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+.terraform.lock.hcl
+>>>>>>> 6a01f85 (gitignore: ignore Terraform cache and state)
