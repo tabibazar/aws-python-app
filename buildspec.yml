@@ -16,21 +16,15 @@ phases:
       docker: 20
     commands:
       - echo "Installing unzip and Terraform if missing"
-      - |
-        if ! command -v unzip >/dev/null 2>&1; then
-          (yum install -y unzip || (apt-get update -y && apt-get install -y unzip)) || true
-        fi
-      - |
-        if ! command -v terraform >/dev/null 2>&1; then
-          curl -sSLo /tmp/terraform.zip https://releases.hashicorp.com/terraform/1.13.0/terraform_1.13.0_linux_amd64.zip
-          unzip -o /tmp/terraform.zip -d /usr/local/bin
-          terraform -version
-        fi
+      - if ! command -v unzip >/dev/null 2>&1; then (yum install -y unzip || (apt-get update -y && apt-get install -y unzip)) || true; fi
+      - if ! command -v terraform >/dev/null 2>&1; then curl -sSLo /tmp/terraform.zip https://releases.hashicorp.com/terraform/1.13.0/terraform_1.13.0_linux_amd64.zip && unzip -o /tmp/terraform.zip -d /usr/local/bin && terraform -version; fi
 
   pre_build:
     commands:
       - echo "Logging in to ECR: $ECR_REPO_URL"
-      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REPO_URL"
+      - ECR_REGISTRY="${ECR_REPO_URL%%/*}"
+      - echo "Derived ECR registry: $ECR_REGISTRY"
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
       - echo "Set image tag from commit"
       - COMMIT_SHA="${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}"
       - IMAGE_TAG="${COMMIT_SHA:0:7}"
@@ -45,20 +39,14 @@ phases:
       - docker build -t "$IMAGE" .
       - docker push "$IMAGE"
       - echo "image=$IMAGE" > image.env
-
       - echo "Terraform init/plan (in terraform/)"
-      - |
-        terraform -chdir=terraform init -input=false \
-          -backend-config="bucket=$TF_BUCKET" \
-          -backend-config="key=$TF_KEY" \
-          -backend-config="region=$TF_REGION"
+      - terraform -chdir=terraform init -input=false -backend-config="bucket=$TF_BUCKET" -backend-config="key=$TF_KEY" -backend-config="region=$TF_REGION"
       - terraform -chdir=terraform plan -input=false -out=tfplan
 
   post_build:
     commands:
       - echo "Terraform apply"
       - terraform -chdir=terraform apply -input=false -auto-approve tfplan
-
       # Helpful outputs if you defined them (service_hostname/service_ip)
       - echo "Collecting Terraform outputs"
       - terraform -chdir=terraform output -json > tf-outputs.json || true
