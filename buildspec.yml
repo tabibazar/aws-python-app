@@ -21,9 +21,9 @@ phases:
 
   pre_build:
     commands:
-      - echo "Logging in to ECR: $ECR_REPO_URL"
+      - 'echo "Logging in to ECR: $ECR_REPO_URL"'
       - ECR_REGISTRY="${ECR_REPO_URL%%/*}"
-      - echo "Derived ECR registry: $ECR_REGISTRY"
+      - 'echo "Derived ECR registry: $ECR_REGISTRY"'
       - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
       - echo "Set image tag from commit"
       - COMMIT_SHA="${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}"
